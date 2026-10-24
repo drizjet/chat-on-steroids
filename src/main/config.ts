@@ -304,6 +304,7 @@ const commandAllowlistRuleSchema = z.string().max(MAX_COMMAND_ALLOWLIST_RULE_CHA
 let damagedPhoneServerLogged = false;
 
 const configSchema = z.object({
+  coordinator: z.object({ enabled: z.boolean(), root: z.string().min(1).max(4096) }).strict().optional(),
   // A config written by hand — or by a build before `/skills` was reserved — must not be
   // able to claim a reserved virtual root. Renamed rather than rejected: a single bad root
   // name is not a reason to throw away the whole config and every other approved folder.

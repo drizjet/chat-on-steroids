@@ -1118,9 +1118,44 @@ function Assert-CoordinateFrame($frame) {
 
 ${WINDOWS_APPS_SCRIPT}
 
+$script:CoordinatorLease = $null
+function Write-CoordinatorGuiAudit($lease, [string]$phase) {
+  $record = @{ TimestampUtc = [DateTimeOffset]::UtcNow.ToString('o'); Phase = $phase; Principal = $lease.Principal; OperationId = $lease.OperationId; HolderPid = $PID }
+  [IO.File]::AppendAllText((Join-Path $lease.Root 'GUI_INPUT_AUDIT.jsonl'), (($record | ConvertTo-Json -Compress) + [Environment]::NewLine), (New-Object Text.UTF8Encoding($false)))
+}
 function Handle-Request($request) {
   [Clf]::EnsureDpiAware()
   $result = @{ ok = $true }
+  if ($request.op -eq 'coordinator_acquire') {
+    if ($script:CoordinatorLease) { throw 'GUI_LEASE_BUSY: this helper already owns a transaction' }
+    if (-not $request.coordinator -or $request.token -cnotmatch '^[a-f0-9]{32}$') { throw 'GUI_LEASE_INVALID: missing coordinator identity' }
+    $mutex = New-Object Threading.Mutex($false, 'Local\CoS-Desktop-Input')
+    $owned = $false
+    try {
+      try { $owned = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $owned = $true }
+      if (-not $owned) { throw 'GUI_LEASE_BUSY: another coordinator transaction owns desktop input; no input ran' }
+      $lease = @{ Mutex=$mutex; Root=[string]$request.coordinator.root; Principal=[string]$request.coordinator.principal; OperationId=[string]$request.coordinator.operationId; Token=[string]$request.token }
+      Write-CoordinatorGuiAudit $lease 'acquired'
+      $script:CoordinatorLease=$lease
+      $result.acquired=$true
+      return $result
+    } catch {
+      if($owned){$mutex.ReleaseMutex()}
+      $mutex.Dispose()
+      throw
+    }
+  }
+  if ($request.op -eq 'coordinator_release') {
+    $lease=$script:CoordinatorLease
+    if(-not $lease -or $lease.Token -cne $request.token){throw 'GUI_LEASE_OWNER_MISMATCH: transaction token does not own this lease'}
+    try { Write-CoordinatorGuiAudit $lease 'released' }
+    finally { $script:CoordinatorLease=$null; $lease.Mutex.ReleaseMutex(); $lease.Mutex.Dispose() }
+    $result.released=$true
+    return $result
+  }
+  if ($request.coordinator -and $request.op -in @('act','focus','launch_app')) {
+    if(-not $script:CoordinatorLease -or $script:CoordinatorLease.Token -cne $request.coordinator.token){throw 'GUI_LEASE_REQUIRED: input requires the current coordinator transaction; no input ran'}
+  }
   switch ($request.op) {
     'warm' {
       # Touch both Win32 and UIA without reading pixels or changing focus. Connector startup

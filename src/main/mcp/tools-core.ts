@@ -1,4 +1,5 @@
 import { toolDeclaration } from './tool-declarations.js';
+import { checkCoordinatorCommand, workspacePolicySchema } from '../safety-coordinator.js';
 import { registerPlanTool } from './plan-tool.js';
 import { goalWorkerChat, imageExportCapable } from '../bridge.js';
 import { exportImage, ImageExportError } from '../image-export.js';
@@ -494,7 +495,8 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
             path: z.string().describe('New file path in an approved folder, for example /workspace/images/logo.png. Without an extension the image\'s own (.png, .jpg or .webp) is added.'),
             // A number, not a name: ChatGPT fills a string here with the picture's `file_…` id and then
             // fails the call internally before it reaches the app (measured live 2026-10-05).
-            nth: z.number().int().min(1).max(100).optional().describe('Which image, counting back from the newest generated in this chat: 1 (the default) is the latest, 2 the one before, and so on.')
+            nth: z.number().int().min(1).max(100).optional().describe('Which image, counting back from the newest generated in this chat: 1 (the default) is the latest, 2 the one before, and so on.'),
+            workspace_policy: workspacePolicySchema
           })
           .strict()
       })),
@@ -718,7 +720,8 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
         description: APPLY_PATCH_DESCRIPTION,
         inputSchema: z
           .object({
-            patch: z.string().describe(APPLY_PATCH_ARGUMENT_DESCRIPTION)
+            patch: z.string().describe(APPLY_PATCH_ARGUMENT_DESCRIPTION),
+            workspace_policy: workspacePolicySchema
           })
           .strict()
       })),
@@ -786,7 +789,8 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
             // Accepted and ignored on purpose; see MAX_OUTPUT_TOKENS_DESCRIPTION.
             max_output_tokens: unsignedIntegerNumber.optional().describe(MAX_OUTPUT_TOKENS_DESCRIPTION),
             shell: z.string().optional().describe(EXEC_COMMAND_SHELL_DESCRIPTION),
-            login: z.boolean().optional().describe(EXEC_COMMAND_LOGIN_DESCRIPTION)
+            login: z.boolean().optional().describe(EXEC_COMMAND_LOGIN_DESCRIPTION),
+            workspace_policy: workspacePolicySchema
           })
           .strict()
           .superRefine((input, refinement) => {
@@ -803,6 +807,7 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
       async (input) =>
         reg.guarded('command', 'exec_command', async () => {
           const dir = await resolveCwd(ctx, input.workdir);
+          if (!dir.remote) await checkCoordinatorCommand(dir.real, dir.virtual);
           const rawCommands = input.cmd === undefined ? input.cmds! : [input.cmd];
           const isBatch = input.cmd === undefined;
           for (const [index, rawCommand] of rawCommands.entries()) {
@@ -1113,6 +1118,7 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
         inputSchema: z
           .object({
             session_id: int32Number.describe(WRITE_STDIN_SESSION_ID_DESCRIPTION),
+            workspace_policy: workspacePolicySchema,
             chars: z.string().optional().describe(WRITE_STDIN_CHARS_DESCRIPTION),
             yield_time_ms: unsignedIntegerNumber.optional().describe(WRITE_STDIN_YIELD_TIME_DESCRIPTION),
             max_output_tokens: unsignedIntegerNumber.optional().describe(MAX_OUTPUT_TOKENS_DESCRIPTION)
@@ -1156,7 +1162,8 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
           // A worker can keep an interactive shell running after its Git worktree has been
           // replaced. Verify the exact current allocation before forwarding even empty polls:
           // stdin may execute writes in the shell's now user-owned directory.
-          await validatedWorkspace();
+          const workspace = await validatedWorkspace();
+          if (input.chars) await checkCoordinatorCommand(workspace?.real, workspace?.virtual);
           // Both sides of the wait. An empty poll blocks for seconds by design, and a caller
           // sitting in one is attending its session rather than neglecting it.
           noteExecAttended(input.session_id);

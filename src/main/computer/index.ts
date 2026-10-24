@@ -25,6 +25,7 @@ import { logInfo, logWarn } from '../logger.js';
 import type { MacOSDesktopAccessStatus, MacOSPermissionState } from '../../shared/types.js';
 import { noteMacOSGrants } from './macos-grants.js';
 import { HELPER_SCRIPT } from './helper.js';
+import { coordinatorGuiRequest, withCoordinatorGuiLease } from '../safety-coordinator.js';
 
 /** Width the screenshot is scaled down to, matching computer-use convention. */
 export const DEFAULT_SCREENSHOT_WIDTH = 1280;
@@ -828,7 +829,8 @@ function runHelper(request: Record<string, unknown>, expected?: ExpectedHelper):
   const result = helperQueue.then(async () => {
     const startedAt = Date.now();
     try {
-      return await sendHelperRequest(request, expected);
+      const coordinator = coordinatorGuiRequest();
+      return await sendHelperRequest(coordinator ? { ...request, coordinator } : request, expected);
     } finally {
       logInfo(
         `desktop timing op=${operation} helper_queue_ms=${startedAt - queuedAt} helper_ms=${Date.now() - startedAt}`
@@ -963,7 +965,7 @@ export async function listDesktopApps(opts: { match?: string; limit?: number } =
 }
 
 export async function focusWindow(id: number): Promise<boolean> {
-  const reply = await runHelper({ op: 'focus', id });
+  const reply = await withCoordinatorGuiLease(runHelper, () => runHelper({ op: 'focus', id }));
   return reply['focused'] === true;
 }
 
@@ -1429,7 +1431,7 @@ export async function act(
   actions: Action[],
   opts: { frameId?: number; window?: number; ownerWindow?: number; app?: string; ownerApp?: string } = {}
 ): Promise<ActionResult> {
-  return exclusive(() => actLocked(actions, opts));
+  return exclusive(() => withCoordinatorGuiLease(runHelper, () => actLocked(actions, opts)));
 }
 
 /**
@@ -1461,7 +1463,7 @@ export async function actAndCapture(
     verify?: VerificationSpec;
   } = {}
 ): Promise<ActionResult & { screenshot: Screenshot | null; verification: VerificationResult | null }> {
-  return exclusive(async () => {
+  return exclusive(() => withCoordinatorGuiLease(runHelper, async () => {
     const before = opts.frameId === undefined ? qualifiedFrame(lastFrame) : frameById(opts.frameId);
     // capture.crop is expressed in pixels of the screenshot the caller saw, exactly like a
     // coordinate action. Another chat/agent can replace the app-global lastFrame between that
@@ -1508,7 +1510,7 @@ export async function actAndCapture(
         { completedCount: result.completedCount, failedIndex: result.completedCount, completedRoutes: result.routes }
       );
     }
-  });
+  }));
 }
 
 async function verifyDesktopLocked(spec: VerificationSpec): Promise<VerificationResult> {

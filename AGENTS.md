@@ -5283,6 +5283,13 @@ process once and retains an explicit access error; ordinary network retry remain
 
 ### Native Desktop
 
+An optional `coordinator` configuration integrates an existing Windows pilot registry.
+`safety-coordinator.ts` owns request-derived principals, local path preflights and audit;
+the existing native helper owns the pilot's named GUI mutex across complete input transactions.
+Core schemas accept scoped workspace acknowledgements and declared command targets.
+See `docs/safety-coordinator.md` for enforcement limits and controlled restart/migration gates.
+Source/build success is not proof that the installed app or external agents are governed.
+
 Desktop is available only on Windows and supported macOS. Linux removes it from live discovery
 and enforcement while preserving stored preferences. Windows uses the bounded PowerShell/Win32/
 UIA helper; macOS uses Swift ScreenCaptureKit/AX/CGEvent through an architecture-matched N-API
