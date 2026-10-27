@@ -25,6 +25,12 @@ afterAll(async () => {
   await removeTempDir(dir);
 });
 
+it('retains custom coordinator enrollment and update protection across validated saves', async () => {
+  const coordinator = { enabled: true, root: dir, autoRegisterSessions: true, protectUpdates: true };
+  await saveConfig({ ...defaultConfig(), coordinator });
+  expect((await loadConfig()).coordinator).toEqual(coordinator);
+});
+
 describe('browser bridge port config', () => {
   it('defaults fresh and legacy configs to Auto and round-trips every supported choice', async () => {
     expect(defaultConfig().ui.browserBridgePort).toBe('auto');

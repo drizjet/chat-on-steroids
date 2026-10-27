@@ -5284,6 +5284,10 @@ process once and retains an explicit access error; ordinary network retry remain
 ### Native Desktop
 
 An optional `coordinator` configuration integrates an existing Windows pilot registry.
+`autoRegisterSessions` enrolls only proven durable session workspaces through that registry's
+existing mutex. Approved umbrella roots are excluded. `protectUpdates` defers vendor installers
+until the custom safety integration has a compatible build. The local `/v1/status` safety receipt
+and `scripts/coordinator-preflight.mjs` distinguish live activation from saved configuration.
 `safety-coordinator.ts` owns request-derived principals, local path preflights and audit;
 the existing native helper owns the pilot's named GUI mutex across complete input transactions.
 Core schemas accept scoped workspace acknowledgements and declared command targets.

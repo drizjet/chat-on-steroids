@@ -18,6 +18,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, readdi
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as config from '../src/main/config.js';
 
 const spawned: Array<{ file: string; args: string[] }> = [];
 const spawnOptions: Array<Record<string, unknown> | undefined> = [];
@@ -82,6 +83,20 @@ const {
 
 const NEXT = '99.0.0';
 const WINDOWS_ASSET = `Chat-On-Steroids-Setup-${process.arch}.exe`;
+
+it('does not hand off an already staged vendor installer after coordinator protection is enabled', async () => {
+  github();
+  await asPlatform('win32', undefined, () => checkForUpdates());
+  const current = config.getConfig();
+  const guard = vi.spyOn(config, 'getConfig').mockReturnValue({ ...current,
+    coordinator: { enabled: true, root: userData, protectUpdates: true } });
+  try {
+    expect(markInstallOnQuit()).toBe(false);
+    await applyStagedUpdate();
+    expect(spawned).toHaveLength(0);
+    expect(updateStatus().error).toContain('COORDINATOR_UPDATE_REVIEW_REQUIRED');
+  } finally { guard.mockRestore(); }
+});
 const APPIMAGE_ASSET = `Chat-On-Steroids-Linux-${process.arch}.AppImage`;
 
 const sha256 = (body: string): string => createHash('sha256').update(body).digest('hex');
@@ -815,6 +830,9 @@ describe('a check or download that goes wrong on a bad connection', () => {
     await vi.advanceTimersByTimeAsync(2_000);
     await vi.waitFor(() => expect(updateStatus().checkedAt).not.toBeNull());
     expect(updateStatus().error).toBeNull();
+    // checkedAt precedes the download. Join the accepted pass before replacing fetch in
+    // the following test, otherwise it can consume that test's one-shot response stream.
+    await checkForUpdates();
     const calls = online.asked.length;
     await vi.advanceTimersByTimeAsync(60 * 60_000);
     expect(online.asked).toHaveLength(calls);
@@ -830,7 +848,7 @@ describe('a check or download that goes wrong on a bad connection', () => {
     fetch.mockImplementation(async (input: string | URL) => String(input).endsWith(WINDOWS_ASSET) ? new Response(stalled, { status: 200 }) : answer(input));
     let done = false;
     const pass = asPlatform('win32', undefined, () => checkForUpdates()).then(() => { done = true; });
-    await vi.waitFor(() => expect(updateStatus().stage).toBe('downloading'));
+    await vi.waitFor(() => expect(updateStatus().stage, updateStatus().error ?? '').toBe('downloading'));
     await vi.advanceTimersByTimeAsync(59_000);
     expect(done).toBe(false);
     await vi.advanceTimersByTimeAsync(2_000);

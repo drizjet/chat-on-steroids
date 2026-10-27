@@ -3,10 +3,18 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { z } from 'zod';
 import { getConfig } from './config.js';
 import { currentCall } from './mcp/call-context.js';
 import { logWarn } from './logger.js';
+
+/** A live capability receipt, with no paths, session identities or credentials. */
+export function coordinatorRuntimeStatus() {
+  return { build: 'COS_COORDINATOR_BUILD_20261027', enabled: Boolean(coordinatorRoot()),
+    autoRegisterSessions: getConfig().coordinator?.autoRegisterSessions === true,
+    protectUpdates: getConfig().coordinator?.protectUpdates === true, isolation: 'cooperative' };
+}
 
 export const workspacePolicySchema = z.object({
   acknowledge_cross_workspace: z.boolean().optional(),
@@ -33,7 +41,8 @@ export function coordinatorRoot(): string | null {
 
 export function coordinatorPrincipal(): string {
   const caller = currentCall()?.caller;
-  return caller?.sessionId ? `session:${caller.sessionId}`
+  const sessionId = caller?.sessionId;
+  return sessionId ? `session:${sessionId}`
     : caller?.conversationId ? `chat:${caller.conversationId}`
     : caller?.requestId ? `request:${caller.requestId}` : `unattributed:${process.pid}`;
 }
@@ -104,15 +113,77 @@ const contains = (parent: string, target: string): boolean => {
   return rel === '' || (!rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel));
 };
 
+/** Enrol through the existing mutex-protected registry; never guess a session from a title. */
+export async function ensureCoordinatorWorkspace(workspace: string): Promise<void> {
+  const root = coordinatorRoot();
+  if (!root || !getConfig().coordinator?.autoRegisterSessions) return;
+  const caller = currentCall()?.caller;
+  if (!caller?.sessionId && caller?.requestId) {
+    // Keep the GUI-only path independent of the recorder/agent/native-image module graph.
+    const proof = (await import('./session/correlation.js')).requestCorrelation(caller.requestId);
+    if (proof) caller.sessionId = proof.sessionId;
+  }
+  const principal = coordinatorPrincipal();
+  if (!principal.startsWith('session:')) return;
+  const target = await canonicalCoordinatorPath(workspace);
+  // A shared approved umbrella is not a project. Never claim a drive or the whole tools/vault root.
+  if (path.parse(target).root === target) return;
+  for (const approved of getConfig().roots) {
+    if (!approved.remote && (await canonicalCoordinatorPath(approved.path)).toLowerCase() === target.toLowerCase()) return;
+  }
+  const rows = await registrations(root);
+  if (rows.some(row => contains(row.Workspace, target) || contains(target, row.Workspace))) return;
+  const agentId = `session-${createHash('sha256').update(principal + '\0' + target.toLowerCase()).digest('hex').slice(0,24)}`;
+  try {
+    const executeFile = promisify((await import('node:child_process')).execFile);
+    await executeFile(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+      ['-NoProfile', '-NonInteractive', '-File', path.join(root, 'CoS-Agent.ps1'), '-Action', 'register',
+        '-AgentId', agentId, '-Workspace', target, '-Principal', principal, '-SessionId', principal.slice(8)],
+      { windowsHide: true, timeout: 20_000, maxBuffer: 16_384 });
+  } catch (error) {
+    // Another call can win the same canonical workspace. Re-read its committed registry, then let
+    // the normal write gate decide ownership. An unrelated registration failure stays visible.
+    const after = await registrations(root);
+    if (!after.some(row => contains(row.Workspace, target) || contains(target, row.Workspace))) {
+      throw new Error(`COORDINATOR_ENROLLMENT_FAILED: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
+/** The first absolute write in an unfiled chat must be protected too. A broad approved
+ * umbrella learned while resolving a patch is not a reason to skip its actual target folder. */
+export async function ensureCoordinatorWriteWorkspace(value: string, preferred?: string): Promise<void> {
+  if (!coordinatorRoot() || !getConfig().coordinator?.autoRegisterSessions) return;
+  const target = await canonicalCoordinatorPath(value);
+  if (preferred) {
+    const workspace = await canonicalCoordinatorPath(preferred);
+    const umbrellas = await Promise.all(getConfig().roots.filter(root => !root.remote).map(root => canonicalCoordinatorPath(root.path)));
+    if (contains(workspace, target) && !umbrellas.some(root => root.toLowerCase() === workspace.toLowerCase())) {
+      await ensureCoordinatorWorkspace(workspace); return;
+    }
+  }
+  let folder = target;
+  for (;;) {
+    const exists = await fs.stat(folder).catch(error => {
+      if (['ENOENT','ENOTDIR'].includes(error.code)) return null;
+      throw error;
+    });
+    if (exists?.isDirectory()) { await ensureCoordinatorWorkspace(folder); return; }
+    const parent = path.dirname(folder);
+    if (parent === folder) return;
+    folder = parent;
+  }
+}
+
 export async function checkCoordinatorPath(value: string, access: 'read' | 'write', base?: string, display = 'the requested path'): Promise<void> {
   const root = coordinatorRoot();
   if (!root) return;
   const target = await canonicalCoordinatorPath(value, base);
   const rows = await registrations(root);
   const principal = coordinatorPrincipal();
-  const mine = rows.find(row => row.Principal === principal || (row.SessionId && principal === `session:${row.SessionId}`));
   const owner = rows.filter(row => contains(row.Workspace, target)).sort((a, b) => b.Workspace.length - a.Workspace.length)[0];
-  const cross = owner !== undefined && owner.AgentId !== mine?.AgentId;
+  const mine = owner && (owner.Principal === principal || (owner.SessionId && principal === `session:${owner.SessionId}`)) ? owner : undefined;
+  const cross = owner !== undefined && !mine;
   const grant = operations.getStore()?.grant;
   const acknowledged = grant?.acknowledge_cross_workspace === true && Boolean(grant.reason?.trim());
   const denied = access === 'write' && cross && !acknowledged;
@@ -131,6 +202,7 @@ export async function checkCoordinatorPath(value: string, access: 'read' | 'writ
 export async function checkCoordinatorCommand(cwd: string | undefined, displayCwd = 'the command workspace'): Promise<void> {
   if (!coordinatorRoot()) return;
   const grant = operations.getStore()?.grant;
+  if (cwd) await ensureCoordinatorWorkspace(cwd);
   if (cwd) await checkCoordinatorPath(cwd, 'write', undefined, displayCwd);
   for (const [access, targets] of [['read', grant?.read_paths], ['write', grant?.write_paths]] as const) {
     for (const value of targets ?? []) {

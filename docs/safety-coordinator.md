@@ -3,7 +3,7 @@
 This optional integration uses the existing coordinator registry and Windows named mutex.
 It does not create a command service or change Windows ACLs.
 
-The local configuration can enable it with `coordinator: { enabled: true, root: <absolute pilot folder> }`.
+The local configuration enables it with `coordinator: { enabled: true, root: <absolute pilot folder>, autoRegisterSessions: true, protectUpdates: true }`.
 Do this only after backing up configuration and installing the matching app build during a
 controlled restart. An unmodified running app does not acquire these protections merely
 because configuration or source files were changed.
@@ -46,3 +46,36 @@ registration, execution route and rollback. A running external process cannot be
 reparented into a Job Object or made to use the app's tools by registering its PID. Reuse or
 relaunch owned agents deliberately, verify collisions in disposable workspaces, and list
 every ungoverned execution route before claiming full coverage.
+
+## Session enrollment and multiple writers
+
+With `autoRegisterSessions`, a verified session's project/learned workspace is enrolled before
+file writes, and its explicit command workspace before launching a command. Enrollment calls
+the existing PowerShell registration owner and its Windows mutex; it does not create a second
+registry or invent identity from a chat title. An exact late request correlation can recover
+the durable session. Unproven callers and approved umbrella roots are never automatically
+enrolled. Each session may own multiple disjoint workspaces. A competing registration is
+re-read before the write gate decides; simultaneous callers cannot both claim the same path.
+
+Existing chats keep their folders. When two chats share one registered folder, the second
+writer receives the ordinary acknowledgement gate. This does not relocate existing work.
+`multiAgent.autoWorktrees` uses CoS's existing managed-worker worktree implementation for
+new allocations. It does not isolate unrelated prime chats or migrate existing workers.
+An unfiled chat's first absolute write also enrolls its nearest existing target folder when
+there is no narrower proven workspace. This avoids a first-write gap after a broad root was
+learned during patch resolution. Approved umbrella roots remain excluded.
+
+## Update compatibility and live proof
+
+`protectUpdates` preserves the custom safety build: newer vendor releases are discovered,
+but downloading/installation is deferred with `COORDINATOR_UPDATE_REVIEW_REQUIRED`. The
+explicit install and final quit-time handoff both recheck the setting. This is an intentional
+tradeoff: compatible safety changes must be rebased and validated before applying a vendor
+release, including any security fixes. External installers can still replace the app.
+
+The authenticated `/v1/status` includes a `safetyCoordinator` receipt with its build marker,
+enabled state, enrollment and update-guard flags. It publishes no registry path or identities.
+`node scripts/coordinator-preflight.mjs` checks the actual installed package, saved config,
+registry counts and live receipt. It returns exit code 2 for degraded coverage, and never
+equates a live tunnel or enabled setting with protection. `--offline` checks installed state
+without claiming live activation. `--app`, `--data` and `--root` support isolated fixtures.

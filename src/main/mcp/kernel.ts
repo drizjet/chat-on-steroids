@@ -1,5 +1,5 @@
 import { offerToolInput, acknowledgeToolInput, TOOL_INPUT_HEADER } from '../session/input.js';
-import { checkCoordinatorPath, withCoordinatorOperation } from '../safety-coordinator.js';
+import { checkCoordinatorPath, ensureCoordinatorWriteWorkspace, withCoordinatorOperation } from '../safety-coordinator.js';
 import { STRICT_REFUSAL_PROGRESS_PREFIX, UNPROVEN_WORKER_NOTICE, UNTRUSTED_NOTICE, UNTRUSTED_WORKER_NOTICE } from '../../shared/trust-notices.js';
 import { noteConnectorUse } from '../connector-proof.js';
 import { beginPluginToolCall } from '../plugin-refresh.js';
@@ -1391,7 +1391,10 @@ export async function resolveIn(
   };
   const resolved = await resolveLinkedSkillAlias(roots, requested, resolveOptions) ??
     await resolvePath(roots, requested, resolveOptions);
-  if (!resolved.root.remote) await checkCoordinatorPath(resolved.real, options.access === 'read' ? 'read' : 'write', undefined, resolved.virtual);
+  if (!resolved.root.remote) {
+    if (options.access !== 'read') await ensureCoordinatorWriteWorkspace(resolved.real, workspace?.real);
+    await checkCoordinatorPath(resolved.real, options.access === 'read' ? 'read' : 'write', undefined, resolved.virtual);
+  }
   // Absolute only: a workspace learned from a relative path would let one loose resolution
   // decide where the next loose resolution points. See workspace.ts.
   if (isAbsoluteVirtualPath(requested) || isNativeWindowsPath(requested)) await learnWorkspace(resolved);

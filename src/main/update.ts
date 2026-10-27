@@ -47,6 +47,7 @@ import { pipeline } from 'node:stream/promises';
 import { app } from 'electron';
 import { logInfo, logWarn } from './logger.js';
 import { APP_VERSION } from './version.js';
+import { getConfig } from './config.js';
 import { isNewer, type UpdateStatus } from '../shared/types.js';
 
 const REPO = 'totec448-spec/chat-on-steroids';
@@ -264,6 +265,7 @@ async function runPass(): Promise<void> {
     return;
   }
   logInfo(`update: ${release.version} is available; this app is ${APP_VERSION}`);
+  if (coordinatorUpdateProtected()) { set({ latest: release.version }); return; }
   const artifact = stagedArtifact();
   // `latest` and what is being done about it are set in one go. Published separately, the
   // renderer would paint one frame of "a new version exists, and this install updates by
@@ -467,8 +469,18 @@ async function download(version: string, name: string, expected: string): Promis
  *
  * The caller quits. This module still never does.
  */
+export function coordinatorUpdateProtected(): boolean {
+  const settings = getConfig().coordinator;
+  if (!settings?.enabled || !settings.protectUpdates) return false;
+  const error = 'COORDINATOR_UPDATE_REVIEW_REQUIRED: this installation has custom chat safety controls. Prepare and verify a compatible coordinator build before replacing it with a vendor update.';
+  set({ stage: 'failed', error });
+  logWarn(error);
+  return true;
+}
+
 export function markInstallOnQuit(expectedVersion?: string): boolean {
   if (!staged || (expectedVersion !== undefined && staged.version !== expectedVersion)) return false;
+  if (coordinatorUpdateProtected()) return false;
   runAfterInstall = true;
   if (status.notInstalled) set({ notInstalled: null });
   return true;
@@ -565,6 +577,7 @@ export async function applyStagedUpdate(): Promise<void> {
   staged = null;
   runAfterInstall = false;
   if (!ready) return;
+  if (coordinatorUpdateProtected()) return;
   try {
     if ((await fileDigest(ready.file)) !== ready.digest) throw new Error('the staged artifact changed after verification');
     if (ready.kind === 'installer') {

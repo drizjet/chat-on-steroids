@@ -18,13 +18,16 @@ import {
   waitForWindow
 } from '../src/main/computer/index.js';
 import { IS_WINDOWS } from './helpers.js';
+import { getConfig } from '../src/main/config.js';
 
 describe.runIf(IS_WINDOWS)('desktop helper', () => {
   let fixture: ChildProcessWithoutNullStreams | undefined;
   let fixtureRoot = '';
   let fixtureWindows: number[] = [];
+  const previousCoordinator = getConfig().coordinator;
   beforeAll(async () => {
     fixtureRoot = await makeTempDir('cos-owned-desktop-');
+    getConfig().coordinator = { enabled: true, root: fixtureRoot };
     const env: NodeJS.ProcessEnv = { ...process.env, COS_DESKTOP_FIXTURE_DIR: fixtureRoot };
     delete env.ELECTRON_RUN_AS_NODE;
     const electron = createRequire(import.meta.url)('electron') as string;
@@ -60,6 +63,7 @@ describe.runIf(IS_WINDOWS)('desktop helper', () => {
       await fs.writeFile(path.join(fixtureRoot, 'close'), '');
       await closed;
     }
+    getConfig().coordinator = previousCoordinator;
     if (fixtureRoot) await removeTempDir(fixtureRoot);
   });
 
@@ -77,6 +81,27 @@ describe.runIf(IS_WINDOWS)('desktop helper', () => {
     expect(first.screen.height).toBeGreaterThan(0);
     expect(Array.isArray(first.windows)).toBe(true);
     expect(second.screen.width).toBe(first.screen.width);
+  });
+
+  it('refuses input while another participating process owns the desktop mutex', async () => {
+    const shell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe');
+    const holder = spawn(shell, ['-NoProfile', '-NonInteractive', '-Command',
+      '$m=[Threading.Mutex]::new($false,"Local\\CoS-Desktop-Input"); try { if(-not $m.WaitOne(0)){throw "busy"}; [Console]::WriteLine("LEASE_READY"); [Console]::ReadLine() | Out-Null } finally { $m.ReleaseMutex(); $m.Dispose() }'],
+      { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Mutex fixture startup timed out')), 8000);
+        holder.stdout.on('data', chunk => { if (String(chunk).includes('LEASE_READY')) { clearTimeout(timeout); resolve(); } });
+        holder.once('error', error => { clearTimeout(timeout); reject(error); });
+        holder.once('exit', code => { clearTimeout(timeout); reject(new Error(`Mutex fixture exited ${code}`)); });
+      });
+      await expect(focusWindow(999_999_999)).rejects.toThrow('GUI_LEASE_BUSY');
+    } finally {
+      const exited = new Promise<void>(resolve => holder.once('close', () => resolve()));
+      holder.stdin.end('\n');
+      const timeout = setTimeout(() => holder.kill(), 5000);
+      await exited; clearTimeout(timeout);
+    }
   });
 
   it('reports the active window without a screenshot', async () => {

@@ -22,6 +22,7 @@ import { inFlightMcpRequests, inFlightToolCalls, runningToolCalls, settlingToolC
 import { pluginManager } from './plugins/manager.js';
 import { updateStatus } from './update.js';
 import { APP_VERSION } from './version.js';
+import { coordinatorRuntimeStatus } from './safety-coordinator.js';
 import { closeEventStreams, eventStreamSession, serveEventStream } from './control-stream.js';
 import { serveWorkerRead } from './control-workers.js';
 
@@ -441,7 +442,7 @@ async function read(route: string, params: URLSearchParams): Promise<unknown> {
   const workers = await serveWorkerRead(route, params);
   if (workers !== undefined) return workers;
   if (route !== '/v1/status') return serveRead(route, params);
-  return projectStatus({
+  const status = projectStatus({
     connection: getStatus(),
     bridge: await bridgeStatus(),
     plugins: pluginManager.snapshot(),
@@ -453,6 +454,7 @@ async function read(route: string, params: URLSearchParams): Promise<unknown> {
       inFlightMcpRequests: inFlightMcpRequests()
     }
   });
+  return { ...status, safetyCoordinator: coordinatorRuntimeStatus() };
 }
 
 /**

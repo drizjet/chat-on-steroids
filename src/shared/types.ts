@@ -448,7 +448,7 @@ export interface ControlApiSettings {
 
 export interface Config {
   /** Optional integration with an existing Windows multi-agent coordinator registry. */
-  coordinator?: { enabled: boolean; root: string };
+  coordinator?: { enabled: boolean; root: string; autoRegisterSessions?: boolean; protectUpdates?: boolean };
   /**
    * Names this computer's connectors in ChatGPT, for one ChatGPT account used on several
    * computers: "Windows" makes them "Chat On Steroids Core (Windows)" and so on. Empty keeps the
