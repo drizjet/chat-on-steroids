@@ -13,6 +13,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { POWERSHELL_BUILTINS_PREFIX } from '../shared/powershell-builtins.js';
 import {
   applyEnvOverrides,
   deleteEnvValue,
@@ -454,7 +455,7 @@ export function prepareShellCommand(
   }
   const shell = findPowerShell();
   if (!shell) throw new ExecError('PowerShell was not found on this system');
-  const cleanScript = `${CONSOLE_UTF8}${GET_CONTENT_UTF8}$ProgressPreference='SilentlyContinue'; ${script}`;
+  const cleanScript = `${CONSOLE_UTF8}${POWERSHELL_BUILTINS_PREFIX}${GET_CONTENT_UTF8}$ProgressPreference='SilentlyContinue'; ${script}`;
   const encoded = Buffer.from(cleanScript, 'utf16le').toString('base64');
   return {
     file: shell,
@@ -482,7 +483,7 @@ export async function runPowerShell(
   // command line as a place where model-supplied text could be misparsed. The encoding
   // preamble is the other half: what goes *in* has been unambiguous all along, and this is
   // what makes what comes back out unambiguous too. See CONSOLE_UTF8.
-  const cleanScript = `${CONSOLE_UTF8}${GET_CONTENT_UTF8}$ProgressPreference='SilentlyContinue'; ${script}`;
+  const cleanScript = `${CONSOLE_UTF8}${POWERSHELL_BUILTINS_PREFIX}${GET_CONTENT_UTF8}$ProgressPreference='SilentlyContinue'; ${script}`;
   const encoded = Buffer.from(cleanScript, 'utf16le').toString('base64');
   const result = await run({
     file: shell,

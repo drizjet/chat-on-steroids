@@ -31,6 +31,13 @@ async function enableAutoRouting(): Promise<void> {
 
 beforeEach(async () => {
   directory = await makeTempDir('cos-auto-skills-');
+  // Routing reads the user's Skills policy. Fixtures must not inherit the
+  // developer's real Codex/Claude/admin configuration or installed catalog.
+  vi.stubEnv('HOME', path.join(directory, 'home'));
+  vi.stubEnv('USERPROFILE', path.join(directory, 'home'));
+  vi.stubEnv('CODEX_HOME', path.join(directory, 'codex'));
+  vi.stubEnv('CLAUDE_CONFIG_DIR', path.join(directory, 'claude'));
+  vi.stubEnv('ProgramData', path.join(directory, 'admin'));
   initConfigPath(directory); initDurableStore(directory); initSessionStore(directory); resetInputForTests();
   await initSkillsPath(directory); await saveConfig(defaultConfig());
 });
@@ -44,6 +51,14 @@ it('keeps automatic Skill routing off unless the user enables it', async () => {
   await install('code-review', 'Code Review', 'Review source code changes for correctness and maintainability.');
   const row = await enqueueInput(request('Please use Code Review for this source change.'));
   expect(routedIds(row)).toBeUndefined();
+});
+
+it('still fails closed for malformed policy inside the isolated user configuration', async () => {
+  await install('code-review', 'Code Review', 'Review source code changes.');
+  await enableAutoRouting();
+  await fs.mkdir(path.join(directory, 'codex'), { recursive: true });
+  await fs.writeFile(path.join(directory, 'codex', 'config.toml'), '[malformed');
+  expect(routedIds(await enqueueInput(request('Please use Code Review for this source change.')))).toEqual([]);
 });
 
 it('freezes one literal unambiguous metadata match into the durable input owner', async () => {

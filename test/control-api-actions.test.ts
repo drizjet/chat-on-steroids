@@ -255,7 +255,7 @@ describe('with actions switched off', () => {
     expect(refused.status).toBe(403);
     expect(refused.continued).toBe(false);
     expect((await call('GET', '/v1/inputs')).status).toBe(200);
-    expect((await call('GET', '/v1/health')).body.actions).toEqual({ enabled: false, routes: ['POST /v1/inputs', 'POST /v1/inputs/{id}/cancel', 'POST /v1/workers/{ownerId}/spawn', 'POST /v1/workers/{ownerId}/message', 'POST /v1/workers/{ownerId}/ack', 'POST /v1/sessions/{id}/stop'] });
+    expect((await call('GET', '/v1/health')).body.actions).toEqual({ enabled: false, routes: ['POST /v1/inputs', 'POST /v1/inputs/{id}/cancel', 'POST /v1/workers/{ownerId}/spawn', 'POST /v1/workers/{ownerId}/message', 'POST /v1/workers/{ownerId}/ack', 'POST /v1/sessions/{id}/stop', 'POST /v1/sessions/{id}/automation'] });
   });
 
   it('follows the switch on the next request without restarting the listener', async () => {
@@ -1122,6 +1122,75 @@ describe('choosing a model', () => {
     const sent = await post('/v1/inputs', sendBody());
     expect(sent.status).toBe(202);
     expect(sent.body.input).toMatchObject({ model: null, reasoningEffort: null });
+  });
+});
+
+describe('controlling existing chat automation', () => {
+  const controls = (): SessionControlsView => ({
+    sessionId: chatSession, conversationId: CHAT, plan: null, automation: 'loop', objective: '',
+    activeTurnId: null, finishHeld: false, blocked: '', job: null
+  });
+  const route = () => '/v1/sessions/' + chatSession + '/automation';
+
+  it('checks an expected conversation inside the real owner before changing a switch', async () => {
+    const { goalSwitchFor } = await import('../src/main/goal.js');
+    const before = { ...goalSwitchFor(CHAT) };
+    await expect(bridge.setSessionAutomation(chatSession, 'loop', true, 'old-chat')).rejects.toThrow('conversation_changed');
+    expect(goalSwitchFor(CHAT)).toEqual(before);
+  });
+
+  it('uses the existing durable automation owner with the exact expected conversation', async () => {
+    const apply = vi.spyOn(bridge, 'setSessionAutomation').mockResolvedValue(controls());
+    try {
+      const reply = await post(route(), { conversationId: CHAT, mode: 'loop', afterTurn: true });
+      expect(reply.status).toBe(200);
+      expect(apply).toHaveBeenCalledWith(chatSession, 'loop', true, CHAT);
+      expect(reply.body.live.automation).toBe('loop');
+      expect(reply.body).not.toHaveProperty('objective');
+    } finally { apply.mockRestore(); }
+  });
+
+  it('refuses stale bindings, worker/helper chats, unknown targets and malformed bodies before mutation', async () => {
+    const apply = vi.spyOn(bridge, 'setSessionAutomation');
+    try {
+      expect((await post(route(), { conversationId: 'old-chat', mode: 'loop' })).body.error).toBe('conversation_changed');
+      expect((await post(route(), { mode: 'loop' })).body.error).toBe('invalid_body');
+      expect((await post(route(), { conversationId: CHAT, mode: 'loop', unexpected: true })).body.error).toBe('invalid_body');
+      expect((await post('/v1/sessions/nosuchsession/automation', { conversationId: CHAT, mode: 'off' })).body.error).toBe('session_not_found');
+      const unattached = await makeSession('Unattached automation', null);
+      expect((await post('/v1/sessions/' + unattached + '/automation', { conversationId: CHAT, mode: 'loop' })).body.error).toBe('no_chat');
+      for (const kind of ['worker', 'helper']) {
+        const owned = await makeSession('Broker automation', 'broker-chat', { kind, fromSessionId: chatSession, agentId: 'worker-1', task: 'fixture' });
+        expect((await post('/v1/sessions/' + owned + '/automation', { conversationId: 'broker-chat', mode: 'loop' })).body.error).toBe('session_not_controllable');
+      }
+      expect(apply).not.toHaveBeenCalled();
+    } finally { apply.mockRestore(); }
+  });
+
+  it('keeps the disabled-action gate opaque and refuses GET', async () => {
+    const apply = vi.spyOn(bridge, 'setSessionAutomation');
+    try {
+      gate.actions = false;
+      expect((await post(route(), { conversationId: CHAT, mode: 'loop' })).body).toEqual({ error: 'actions_disabled' });
+      expect((await post('/v1/sessions/bad/automation', { secret: 'never read' })).body).toEqual({ error: 'actions_disabled' });
+      gate.actions = true;
+      const get = await call('GET', route());
+      expect(get.status).toBe(405);
+      expect(get.headers.allow).toBe('POST');
+      expect(apply).not.toHaveBeenCalled();
+    } finally { apply.mockRestore(); }
+  });
+
+  it('does not retry a changed conversation or a refused automation setting', async () => {
+    const apply = vi.spyOn(bridge, 'setSessionAutomation').mockRejectedValue(new Error('conversation_changed'));
+    try {
+      const reply = await post(route(), { conversationId: CHAT, mode: 'loop' });
+      expect(reply.status).toBe(409);
+      expect(reply.body.error).toBe('conversation_changed');
+      expect(apply).toHaveBeenCalledTimes(1);
+      apply.mockRejectedValue(new Error('chat_blocked'));
+      expect((await post(route(), { conversationId: CHAT, mode: 'loop' })).body.error).toBe('chat_blocked');
+    } finally { apply.mockRestore(); }
   });
 });
 

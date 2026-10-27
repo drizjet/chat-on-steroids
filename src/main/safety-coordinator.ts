@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { getConfig } from './config.js';
 import { currentCall } from './mcp/call-context.js';
 import { logWarn } from './logger.js';
+import { appendCoordinatorAudit } from './coordinator-audit.js';
 
 /** A live capability receipt, with no paths, session identities or credentials. */
 export function coordinatorRuntimeStatus() {
@@ -74,11 +75,10 @@ export async function withCoordinatorGuiLease<T>(
 async function audit(record: Record<string, unknown>): Promise<void> {
   const root = coordinatorRoot();
   if (!root) return;
-  // One JSONL append per record; no command text, clipboard or typed text is stored here.
-  await fs.appendFile(path.join(root, 'TOOL_POLICY_AUDIT.jsonl'), JSON.stringify({
+  await appendCoordinatorAudit(root, {
     timestampUtc: new Date().toISOString(), principal: coordinatorPrincipal(),
     operationId: operations.getStore()?.id ?? null, tool: operations.getStore()?.tool ?? null, ...record
-  }) + '\n', 'utf8');
+  });
 }
 
 /** Resolve existing ancestors, so a missing leaf below a junction has the real owner's path. */

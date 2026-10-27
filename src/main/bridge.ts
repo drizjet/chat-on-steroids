@@ -2250,8 +2250,9 @@ export async function setSessionObjective(sessionId: string, text: string, mode:
   });
   return sessionControlsFor(sessionId);
 }
-export async function setSessionAutomation(sessionId: string, automation: SessionControlsView['automation'], afterTurn?: boolean): Promise<SessionControlsView> {
+export async function setSessionAutomation(sessionId: string, automation: SessionControlsView['automation'], afterTurn?: boolean, expectedConversationId?: string): Promise<SessionControlsView> {
   const id = await controlledConversation(sessionId);
+  if (expectedConversationId !== undefined && id !== expectedConversationId) throw new Error('conversation_changed');
   if (automation !== 'off' && goalBlockReason(id)) throw new Error(goalWorkerChat(id) ? 'worker_goal_disabled' : 'chat_blocked');
   const mode = automation === 'off' ? goalSwitchFor(id).mode : automation;
   // The existing reply setter retires drafts and durably closes the pickup for Off.

@@ -5133,6 +5133,9 @@ is the message id, as for the composer's New chat; an optional `model` and `reas
 together, must resolve in the saved catalog to an entry offering that effort and are filed under its
 id, else 409 `models_unknown`, `model_unknown` or `effort_unavailable`; without them the row keeps
 null and ChatGPT its own selection), `POST /v1/inputs/{id}/cancel`, and
+`POST /v1/sessions/{id}/automation` with the exact current `conversationId`, `mode` (`off`,
+`goal`, `loop`) and optional `afterTurn`, which calls the composer's durable
+`setSessionAutomation` owner and returns bounded live state, and
 `POST /v1/sessions/{id}/stop` with `{ "turnId" }` from `live.activeTurnId`, which calls
 `stopSessionTurn` exactly as the Stop button does (Goal/Loop off, a 202 with the chat's `live`,
 409 `turn_not_running` when that answer is no longer running; the recorded `turn_end` is the proof
@@ -5152,7 +5155,9 @@ a leading `//`) is a 400 `invalid_target` for every method. With the switch on, 
 none is needed (cancel). Actions run one at a time under their own 30-per-minute limit that
 refused requests do not spend, with at most four waiting (503 `busy` beyond that). One that outlives
 20 s is answered 504. If it had not started, it is turned away and will not run later; if it was
-running, it may still finish, so a caller reads `GET /v1/inputs` before repeating it.
+running, it may still finish, so a caller reads `GET /v1/inputs` before repeating it. For an
+automation mutation, inspect `GET /v1/sessions/{id}?live=1` after timeout or
+`automation_state_unconfirmed`; never replay it merely to recreate an acknowledgement.
 
 There is no new send path. A send builds the same `InputArgs` the composer builds for an ordinary
 message (`mode:'auto'`, no model or effort, no attachments, no stages, no automation; the caller
@@ -5553,6 +5558,11 @@ Inspect exact session/state files (§4), never edit live ledgers as a repair sho
 keeps a redacted 500-entry ring and bounded async `app.log` batches with rotation, explicit
 overload omissions, a two-second final flush and separate `.crash` snapshot. Logs are human
 diagnostics, not restart authority; secrets must never be printed to investigate a connection.
+The optional coordinator's `coordinator-audit.ts` serializes append and 16 MiB rotation of
+`TOOL_POLICY_AUDIT.jsonl` into retained `audit-archive/` files. It deletes no history. New free-form
+failure/reason text is replaced with correlation digests; historical archives remain private.
+PowerShell command wrappers load Utility from the bundled `$PSHOME` module before user code,
+so a same-named PATH executable cannot suppress a standard error cmdlet before module autoload.
 
 Activity › Diagnostics report (`diagnostics:saveReport`, `diagnostics-report.ts`) saves one plain-text
 file for bug reports: versions, bridge/companion state, the connection self-test, settings,

@@ -85,6 +85,10 @@ describe.runIf(process.platform === 'win32')('Windows Codex runtime launch bound
       const prelude = source.includes('__dirname') ? 'const __dirname = import.meta.dirname;\n' : '';
       await writeFile(path.join(runtime, `${name}.js`), prelude + stripTypeScriptTypes(source));
     }
+    const shared = path.join(directory, 'shared');
+    await mkdir(shared);
+    const builtins = await readFile(new URL('../src/shared/powershell-builtins.ts', import.meta.url), 'utf8');
+    await writeFile(path.join(shared, 'powershell-builtins.js'), stripTypeScriptTypes(builtins));
     await writeFile(script, `
       if (process.type === 'browser') require('electron').app.exit(42);
       else if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(['plugin', 'list', '--json'])) process.exit(43);

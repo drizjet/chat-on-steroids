@@ -5,7 +5,7 @@ import type { ControlApiCancelResult, ControlApiSendResult, ControlApiStopResult
 import { REASONING_EFFORTS } from '../shared/session.js';
 import type { ReasoningEffort } from '../shared/session.js';
 import { getChatModels } from './chat-models.js';
-import { stopSessionTurn } from './bridge.js';
+import { setSessionAutomation, stopSessionTurn } from './bridge.js';
 import type { SessionControlsView } from './bridge.js';
 import { getConfig } from './config.js';
 import { projectInput, projectLive, RequestError } from './control-reads.js';
@@ -67,14 +67,19 @@ const cancelBody = z.object({}).strict();
 
 // Stop names the exact answer it ends (`live.activeTurnId`), so a late request never stops a newer one.
 const stopBody = z.object({ turnId: z.string().min(1).max(256) }).strict();
+const automationBody = z.object({
+  conversationId: z.string().min(1).max(128),
+  mode: z.enum(['off', 'goal', 'loop']), afterTurn: z.boolean().optional()
+}).strict();
 
 const CANCEL_ROUTE = /^\/v1\/inputs\/([0-9a-f-]{36})\/cancel$/;
 const STOP_ROUTE = /^\/v1\/sessions\/([0-9a-z-]{8,64})\/stop$/;
+const AUTOMATION_ROUTE = /^\/v1\/sessions\/([0-9a-z-]{8,64})\/automation$/;
 
 /** Every path an action can arrive on, whatever the id, so one gate can refuse them all alike. */
 export function isActionPath(route: string): boolean {
   return route === '/v1/inputs' || /^\/v1\/inputs\/[^/]+\/cancel$/.test(route) || /^\/v1\/workers\/[^/]+\/(spawn|message|ack)$/.test(route) ||
-    /^\/v1\/sessions\/[^/]+\/stop$/.test(route);
+    /^\/v1\/sessions\/[^/]+\/(stop|automation)$/.test(route);
 }
 
 export interface ActionReply {
@@ -261,6 +266,31 @@ async function stop(sessionId: string, rawBody: unknown): Promise<ActionReply> {
   return { status: 202, body: reply };
 }
 
+async function automation(sessionId: string, rawBody: unknown): Promise<ActionReply> {
+  const body = parse(automationBody, rawBody);
+  const session = await readSession(sessionId);
+  if (!session) throw new RequestError(404, 'session_not_found');
+  await controllable(sessionId);
+  if (!session.conversationId) throw new RequestError(409, 'no_chat');
+  if (session.conversationId !== body.conversationId) throw new RequestError(409, 'conversation_changed');
+  if (!actionsAllowed()) throw new RequestError(403, 'actions_disabled');
+  try {
+    // This is the composer's durable owner, not a second automation ledger.
+    // It rechecks the expected binding before any mode mutation and after awaits.
+    const controls = await setSessionAutomation(sessionId, body.mode, body.afterTurn, body.conversationId);
+    logInfo('control API: automation set for session ' + sessionId + ' to ' + body.mode);
+    return { status: 200, body: { live: projectLive(controls) } };
+  } catch (error) {
+    const code = error instanceof Error ? error.message : '';
+    if (['conversation_changed', 'conversation_superseded', 'chat_blocked', 'worker_goal_disabled', 'goal_worker_chat'].includes(code)) {
+      throw new RequestError(409, code);
+    }
+    // A durable setter may have partly completed. Inspect live state rather
+    // than replaying a timed-out or failed mutation merely to recreate a reply.
+    throw new RequestError(409, 'automation_state_unconfirmed', 'inspect GET /v1/sessions/{id}?live=1 before another change');
+  }
+}
+
 /** Undefined when the method and path are not an action. */
 export async function serveAction(method: string, route: string, body: unknown): Promise<ActionReply | undefined> {
   if (method !== 'POST') return undefined;
@@ -273,5 +303,7 @@ export async function serveAction(method: string, route: string, body: unknown):
   if (match) return cancel(match[1]!, body);
   const stopMatch = STOP_ROUTE.exec(route);
   if (stopMatch) return stop(stopMatch[1]!, body);
+  const automationMatch = AUTOMATION_ROUTE.exec(route);
+  if (automationMatch) return automation(automationMatch[1]!, body);
   return undefined;
 }

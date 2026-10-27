@@ -12,6 +12,7 @@
 
 import { accessSync, constants, existsSync, statSync } from 'node:fs';
 import nodePath from 'node:path';
+import { POWERSHELL_BUILTINS_PREFIX } from '../../shared/powershell-builtins.js';
 
 export type ShellType = 'zsh' | 'bash' | 'powershell' | 'sh' | 'cmd';
 
@@ -343,7 +344,7 @@ export function prefixPowershellScriptWithUtf8(command: readonly string[]): stri
  */
 export const POWERSHELL_EXIT_STATUS_SUFFIX =
   '\n$global:__cos_ok = $?\n} | Out-Default\nif ($global:__cos_ok) { exit 0 }; if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 1';
-const POWERSHELL_EXIT_STATUS_PREFIX = '$global:__cos_ok = $true\n. {\n';
+const POWERSHELL_EXIT_STATUS_PREFIX = POWERSHELL_BUILTINS_PREFIX + '$global:__cos_ok = $true\n. {\n';
 
 export function withPowershellExitStatus(command: readonly string[]): string[] {
   const extracted = extractPowershellCommand(command);

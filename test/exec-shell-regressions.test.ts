@@ -190,5 +190,19 @@ describe('PowerShell exit status', () => {
       const sections = parseCommandBatchSections(spawnSync(args[0]!, args.slice(1), { encoding: 'utf8', windowsHide: true }).stdout, batch.marker);
       expect(sections.map(section => plain(section.text).trim().split(/\s+/)[0])).toEqual(['Path', 'second', 'Name']);
     });
+
+    it.skipIf(!shell)(`${name}: loads the bundled error cmdlet before a same-named PATH executable`, () => {
+      const directory = fixture();
+      writeFileSync(join(directory, 'Write-Error.cmd'), '@exit /b 0\r\n');
+      const inherited = process.env.PATH ?? process.env.Path ?? '';
+      const env = { ...process.env };
+      for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') delete env[key];
+      env.Path = directory + ';' + inherited;
+      const args = withPowershellExitStatus(deriveExecArgs(shell!, "Write-Error 'fixture-cmdlet-error'", false));
+      const result = spawnSync(args[0]!, args.slice(1), { encoding: 'utf8', windowsHide: true, env, timeout: 30_000 });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('fixture-cmdlet-error');
+    });
   }
 });
