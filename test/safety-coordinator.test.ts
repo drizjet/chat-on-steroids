@@ -2,6 +2,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 const state = vi.hoisted(() => ({ config: {} as any, caller: {} as any, correlation: null as any }));
 vi.mock('../src/main/config.js', () => ({ getConfig: () => state.config }));
@@ -22,6 +24,7 @@ beforeAll(async () => {
 });
 afterAll(async () => { await fs.rm(base, { recursive: true, force: true }); });
 beforeEach(async () => {
+  await fs.rm(path.join(registry, 'WORKSPACE_POLICY.json'), { force: true });
   state.config = { coordinator: { enabled: true, root: registry }, roots: [{ name: 'test', path: base }] };
   state.caller = { sessionId: 'owner', requestId: 'request-owner' }; state.correlation = null;
   for (const file of await fs.readdir(path.join(registry, 'agents'))) await fs.unlink(path.join(registry, 'agents', file));
@@ -29,6 +32,23 @@ beforeEach(async () => {
 });
 const windows = it.skipIf(process.platform !== 'win32');
 const run = (args: unknown, fn: () => Promise<unknown>) => withCoordinatorOperation('apply_patch', args, fn);
+
+windows('a shared output root cannot become one project exclusive workspace', async () => {
+  await fs.writeFile(path.join(registry, 'WORKSPACE_POLICY.json'), JSON.stringify({ SharedRoots: [owned] }));
+  state.caller.sessionId = 'unrelated-project';
+  await run({}, () => checkCoordinatorPath(path.join(owned, 'other-output.txt'), 'write'));
+});
+
+windows('shared output roots still protect the registered project folders beneath them', async () => {
+  await fs.writeFile(path.join(registry, 'WORKSPACE_POLICY.json'), JSON.stringify({ SharedRoots: [base] }));
+  state.caller.sessionId = 'unrelated-project';
+  await expect(run({}, () => checkCoordinatorPath(path.join(owned, 'file.txt'), 'write'))).rejects.toThrow('CROSS_AGENT_WRITE_ACK_REQUIRED');
+});
+
+windows('rejects malformed shared-root policy rather than silently disabling ownership', async () => {
+  await fs.writeFile(path.join(registry, 'WORKSPACE_POLICY.json'), JSON.stringify({ SharedRoots: 'not-an-array' }));
+  await expect(run({}, () => checkCoordinatorPath(owned, 'write'))).rejects.toThrow();
+});
 
 windows('allows the owning session and refuses a foreign write before its effect', async () => {
   const file = path.join(owned, 'value.txt');
@@ -94,7 +114,7 @@ windows('a release reporting failure never causes already completed input to run
 });
 it('publishes a capability receipt without leaking the registry path or session identity', () => {
   const status = coordinatorRuntimeStatus();
-  expect(status.build).toBe('COS_COORDINATOR_BUILD_20261027');
+  expect(status.build).toBe('COS_COORDINATOR_BUILD_20261027_R2');
   expect(JSON.stringify(status)).not.toContain(registry); expect(JSON.stringify(status)).not.toContain('session:owner');
 });
 
@@ -138,4 +158,35 @@ it.skipIf(process.platform !== 'win32' || !process.env.COS_COORDINATOR_PILOT_SOU
     await expect(run({}, () => checkCoordinatorPath(file, 'write'))).rejects.toThrow('CROSS_AGENT_WRITE_ACK_REQUIRED');
     expect(await fs.readdir(path.join(root, 'agents'))).toHaveLength(1);
     await expect(fs.stat(file)).rejects.toThrow();
+  });
+
+it.skipIf(process.platform !== 'win32' || !process.env.COS_COORDINATOR_PILOT_SOURCE)(
+  'keeps a shared output root open while isolating two real project subdirectories', async () => {
+    const root = path.join(base, 'shared-registry'), shared = path.join(base, 'shared-output');
+    await fs.mkdir(path.join(root, 'agents'), { recursive: true });
+    for (const name of ['CoS-Agent.ps1', 'CoS-WorkspacePolicy.ps1']) await fs.copyFile(path.join(process.env.COS_COORDINATOR_PILOT_SOURCE!, name), path.join(root, name));
+    await fs.writeFile(path.join(root, 'WORKSPACE_POLICY.json'), JSON.stringify({ SharedRoots: [shared] }));
+    const projectA = path.join(shared, 'project-a-é-测试');
+    await fs.mkdir(projectA, { recursive: true }); await fs.mkdir(path.join(shared, 'project-b'));
+    await fs.writeFile(path.join(root, 'agents', 'legacy.json'), JSON.stringify({ AgentId: 'legacy', Workspace: shared, Principal: 'session:old' }));
+    state.config.coordinator = { enabled: true, root, autoRegisterSessions: true };
+    state.caller = { sessionId: 'project-a' };
+    await ensureCoordinatorWriteWorkspace(path.join(projectA, 'file.txt'), shared);
+    await run({}, () => checkCoordinatorPath(path.join(projectA, 'file.txt'), 'write'));
+    state.caller = { sessionId: 'project-b' };
+    await ensureCoordinatorWriteWorkspace(path.join(shared, 'project-b', 'file.txt'), shared);
+    await run({}, () => checkCoordinatorPath(path.join(shared, 'project-b', 'file.txt'), 'write'));
+    await run({}, () => checkCoordinatorPath(path.join(shared, 'summary.txt'), 'write'));
+    await expect(run({}, () => checkCoordinatorPath(path.join(projectA, 'file.txt'), 'write'))).rejects.toThrow('CROSS_AGENT_WRITE_ACK_REQUIRED');
+    const rows = await Promise.all((await fs.readdir(path.join(root, 'agents'))).map(async name => JSON.parse(await fs.readFile(path.join(root, 'agents', name), 'utf8'))));
+    expect(rows).toHaveLength(3);
+    const b = rows.find(row => row.SessionId === 'project-b'); expect(b).toBeTruthy();
+    const shell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe');
+    const native = promisify(execFile);
+    await expect(native(shell, ['-NoProfile','-NonInteractive','-File',path.join(root,'CoS-Agent.ps1'),'-Action','register','-AgentId','bad-shared-claim','-Workspace',shared], { windowsHide: true })).rejects.toThrow('WORKSPACE_SHARED_ROOT');
+    await native(shell, ['-NoProfile','-NonInteractive','-File',path.join(root,'CoS-WorkspacePolicy.ps1'),'-Action','write-file','-AgentId',b.AgentId,'-Path',path.join(shared,'summary.txt'),'-Content','shared summary'], { windowsHide: true });
+    expect(await fs.readFile(path.join(shared,'summary.txt'),'utf8')).toBe('shared summary');
+    await fs.writeFile(path.join(projectA,'file.txt'),'original');
+    await expect(native(shell, ['-NoProfile','-NonInteractive','-File',path.join(root,'CoS-WorkspacePolicy.ps1'),'-Action','write-file','-AgentId',b.AgentId,'-Path',path.join(projectA,'file.txt'),'-Content','wrong'], { windowsHide: true })).rejects.toThrow('CROSS_AGENT_WRITE_ACK_REQUIRED');
+    expect(await fs.readFile(path.join(projectA,'file.txt'),'utf8')).toBe('original');
   });

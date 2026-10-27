@@ -9,7 +9,7 @@ const [installed, target] = process.argv.slice(2);
 if (!installed || !target || !path.isAbsolute(installed) || !path.isAbsolute(target)) throw new Error('Supply absolute installed archive and new staging directory');
 await mkdir(target, { recursive: true });
 const replacement = await readFile(new URL('../out/main/index.js', import.meta.url));
-if (!replacement.includes(Buffer.from('COS_COORDINATOR_BUILD_20261027'))) throw new Error('Build the safety integration first');
+if (!replacement.includes(Buffer.from('COS_COORDINATOR_BUILD_20261027_R2'))) throw new Error('Build the safety integration first');
 const source = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const packaged = JSON.parse(asar.extractFile(installed, 'package.json').toString());
 if (source.version !== packaged.version) throw new Error('Source version differs from installed package');

@@ -84,6 +84,24 @@ const {
 const NEXT = '99.0.0';
 const WINDOWS_ASSET = `Chat-On-Steroids-Setup-${process.arch}.exe`;
 
+it('keeps a settled coordinator compatibility hold out of the network-failure retry loop', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+  const current = config.getConfig();
+  const guarded = { ...current, coordinator: { enabled: true, root: userData, protectUpdates: true } };
+  const guard = vi.spyOn(config, 'getConfig').mockReturnValue(guarded);
+  const { fetch } = github();
+  try {
+    startUpdateChecks(); await checkForUpdates();
+    expect(updateStatus().error).toContain('COORDINATOR_UPDATE_REVIEW_REQUIRED');
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    guarded.coordinator.protectUpdates = false;
+    await checkForUpdates();
+    expect(updateStatus().stage).toBe('ready');
+  } finally { resetUpdateForTests(); guard.mockRestore(); vi.useRealTimers(); }
+});
+
 it('does not hand off an already staged vendor installer after coordinator protection is enabled', async () => {
   github();
   await asPlatform('win32', undefined, () => checkForUpdates());

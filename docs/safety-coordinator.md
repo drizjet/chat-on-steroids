@@ -19,6 +19,11 @@ A registration may map its `Principal` to the app's internally proven `session:<
 or provide `SessionId`. Identity is derived by the app, never accepted as a tool argument.
 Unregistered callers are recorded and warned; they do not acquire another registration's identity.
 Cross-folder reads and writes outside registered workspaces remain possible with warning/audit.
+The central pilot `WORKSPACE_POLICY.json` may declare `SharedRoots` as an array of absolute
+paths. Those root folders cannot have one exclusive owner; project subdirectories beneath
+them still can. Historical registrations of a shared root remain on disk for provenance but
+are ignored by both the app and PowerShell policy. A learned shared root is also excluded
+from automatic enrollment, so another project's subdirectory can be enrolled independently.
 Writes into another registered workspace require the tool's optional `workspace_policy`:
 
 ```json
@@ -72,9 +77,13 @@ but downloading/installation is deferred with `COORDINATOR_UPDATE_REVIEW_REQUIRE
 explicit install and final quit-time handoff both recheck the setting. This is an intentional
 tradeoff: compatible safety changes must be rebased and validated before applying a vendor
 release, including any security fixes. External installers can still replace the app.
+This compatibility hold does not enter the rapid network-failure retry schedule. Explicit
+refresh and ordinary periodic version checks remain available.
 
 The authenticated `/v1/status` includes a `safetyCoordinator` receipt with its build marker,
 enabled state, enrollment and update-guard flags. It publishes no registry path or identities.
+It includes a digest of the configured registry root. Preflight compares that digest with
+saved configuration, so an external root edit cannot falsely certify an old running registry.
 `node scripts/coordinator-preflight.mjs` checks the actual installed package, saved config,
 registry counts and live receipt. It returns exit code 2 for degraded coverage, and never
 equates a live tunnel or enabled setting with protection. `--offline` checks installed state

@@ -5288,6 +5288,9 @@ An optional `coordinator` configuration integrates an existing Windows pilot reg
 existing mutex. Approved umbrella roots are excluded. `protectUpdates` defers vendor installers
 until the custom safety integration has a compatible build. The local `/v1/status` safety receipt
 and `scripts/coordinator-preflight.mjs` distinguish live activation from saved configuration.
+The live registry fingerprint must match saved configuration. The pilot's shared-root policy
+prevents an exclusive claim on a shared output root while retaining project-child ownership.
+Compatibility holds are settled policy and do not enter the short network retry schedule.
 `safety-coordinator.ts` owns request-derived principals, local path preflights and audit;
 the existing native helper owns the pilot's named GUI mutex across complete input transactions.
 Core schemas accept scoped workspace acknowledgements and declared command targets.

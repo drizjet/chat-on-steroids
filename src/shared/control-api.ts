@@ -57,7 +57,7 @@ export interface ControlApiHealth {
 export interface ControlApiStatus {
   appVersion: string;
   /** Present only in the local coordinator build; a missing receipt is not an active guard. */
-  safetyCoordinator?: { build: string; enabled: boolean; autoRegisterSessions: boolean; protectUpdates: boolean; isolation: string };
+  safetyCoordinator?: { build: string; enabled: boolean; autoRegisterSessions: boolean; protectUpdates: boolean; isolation: string; registryFingerprint?: string | null };
   connection: {
     state: string;
     detail: string;

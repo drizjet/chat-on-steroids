@@ -208,6 +208,9 @@ export function startUpdateChecks(): void {
 function scheduleRetry(): void {
   if (retry) { clearTimeout(retry); retry = null; }
   if (!recheck) return;
+  // A compatibility hold is settled policy, not a network outage. Explicit refresh and the
+  // ordinary six-hour check still work; rapid failure retries cannot repair this condition.
+  if (status.error?.startsWith('COORDINATOR_UPDATE_REVIEW_REQUIRED:')) { failures = 0; return; }
   if (status.stage !== 'failed') { failures = 0; return; }
   const wait = RETRY_AFTER_FAILURE_MS[failures];
   if (wait === undefined) return;

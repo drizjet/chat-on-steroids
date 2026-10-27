@@ -2,6 +2,7 @@
 import { open, readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 
 export async function archiveSafety(archive) {
   const file = await open(archive, 'r');
@@ -17,7 +18,7 @@ export async function archiveSafety(archive) {
     const result = await file.read(main, 0, entry.size, 8 + headerSize + Number(entry.offset));
     if (result.bytesRead !== entry.size) throw new Error('Truncated main bundle');
     const text = main.toString();
-    const markers = ['COS_COORDINATOR_BUILD_20261027', 'CROSS_AGENT_WRITE_ACK_REQUIRED', 'GUI_LEASE_RELEASE_FAILED', 'coordinator_acquire', 'COORDINATOR_UPDATE_REVIEW_REQUIRED'];
+    const markers = ['COS_COORDINATOR_BUILD_20261027_R2', 'CROSS_AGENT_WRITE_ACK_REQUIRED', 'GUI_LEASE_RELEASE_FAILED', 'coordinator_acquire', 'COORDINATOR_UPDATE_REVIEW_REQUIRED'];
     return { present: markers.every(marker => text.includes(marker)), missingMarkers: markers.filter(marker => !text.includes(marker)) };
   } finally { await file.close(); }
 }
@@ -28,8 +29,15 @@ export async function inspect({ appRoot, dataRoot, registryRoot, offline = false
   const settings = config.coordinator;
   const root = registryRoot ?? settings?.root;
   let registrations = [], registryError = root && path.isAbsolute(root) ? null : 'Missing absolute registry root', lastAuditUtc = null;
+  let shared = [];
+  if (registryRoot && settings?.root && path.resolve(registryRoot).toLowerCase() !== path.resolve(settings.root).toLowerCase()) registryError = 'Requested registry differs from configured registry';
   if (root) {
     try {
+      let policy = {};
+      try { policy = JSON.parse((await readFile(path.join(root, 'WORKSPACE_POLICY.json'), 'utf8')).replace(/^\uFEFF/, '')); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      shared = policy.SharedRoots ?? [];
+      if (!Array.isArray(shared) || shared.length > 32 || shared.some(value => typeof value !== 'string' || !path.isAbsolute(value))) throw new Error('Invalid shared-root policy');
       for (const name of (await readdir(path.join(root, 'agents'))).filter(name => /^[A-Za-z0-9_-]+\.json$/.test(name))) {
         const row = JSON.parse(await readFile(path.join(root, 'agents', name), 'utf8'));
         if (!row.AgentId || typeof row.Workspace !== 'string' || !path.isAbsolute(row.Workspace)) throw new Error('Invalid workspace registration');
@@ -50,12 +58,17 @@ export async function inspect({ appRoot, dataRoot, registryRoot, offline = false
       live = { appVersion: status.appVersion, safety: status.safetyCoordinator ?? null, toolCalls: status.toolCalls };
     } catch (error) { liveError = error.message; }
   }
+  const configuredFingerprint = typeof settings?.root === 'string' && path.isAbsolute(settings.root)
+    ? createHash('sha256').update(path.resolve(settings.root).toLowerCase()).digest('hex') : null;
+  const registryFingerprintMatches = offline ? null : configuredFingerprint !== null && live?.safety?.registryFingerprint === configuredFingerprint;
   const ready = code.present && settings?.enabled === true && settings.autoRegisterSessions === true && settings.protectUpdates === true
-    && !registryError && (offline || (live?.safety?.enabled === true && live.safety.build === 'COS_COORDINATOR_BUILD_20261027'
-      && live.safety.autoRegisterSessions === true && live.safety.protectUpdates === true));
+    && !registryError && (offline || (live?.safety?.enabled === true && live.safety.build === 'COS_COORDINATOR_BUILD_20261027_R2'
+      && live.safety.autoRegisterSessions === true && live.safety.protectUpdates === true && registryFingerprintMatches));
   return { state: ready ? 'ready-cooperative' : 'degraded', archive: code,
     configured: { enabled: settings?.enabled === true, autoRegisterSessions: settings?.autoRegisterSessions === true, protectUpdates: settings?.protectUpdates === true, managedWorkerWorktrees: config.multiAgent?.autoWorktrees === true },
-    registry: { count: registrations.length, sessionBound: registrations.filter(row => row.SessionId || row.Principal?.startsWith('session:')).length, error: registryError },
+    registry: { count: registrations.length, sessionBound: registrations.filter(row => row.SessionId || row.Principal?.startsWith('session:')).length,
+      sharedRoots: shared.length, sharedRootRegistrations: registrations.filter(row => shared.some(value => path.resolve(value).toLowerCase() === path.resolve(row.Workspace).toLowerCase())).length,
+      fingerprintMatches: registryFingerprintMatches, error: registryError },
     lastAuditUtc, live, liveError, allExecutorsGoverned: false,
     limits: ['Trusted shell commands can use undeclared paths.', 'External executors and human input do not automatically participate.', 'Managed worker worktrees apply to newly allocated workers.'] };
 }

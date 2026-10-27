@@ -11,7 +11,9 @@ import { logWarn } from './logger.js';
 
 /** A live capability receipt, with no paths, session identities or credentials. */
 export function coordinatorRuntimeStatus() {
-  return { build: 'COS_COORDINATOR_BUILD_20261027', enabled: Boolean(coordinatorRoot()),
+  const root = coordinatorRoot();
+  return { build: 'COS_COORDINATOR_BUILD_20261027_R2', enabled: Boolean(root),
+    registryFingerprint: root ? createHash('sha256').update(path.resolve(root).toLowerCase()).digest('hex') : null,
     autoRegisterSessions: getConfig().coordinator?.autoRegisterSessions === true,
     protectUpdates: getConfig().coordinator?.protectUpdates === true, isolation: 'cooperative' };
 }
@@ -96,14 +98,26 @@ export async function canonicalCoordinatorPath(value: string, base = process.cwd
 }
 
 interface Registration { AgentId: string; Workspace: string; Principal?: string; SessionId?: string }
+async function sharedRoots(root: string): Promise<string[]> {
+  let policy: { SharedRoots?: unknown };
+  try { policy = JSON.parse((await fs.readFile(path.join(root, 'WORKSPACE_POLICY.json'), 'utf8')).replace(/^\uFEFF/, '')); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+  const values = z.array(z.string().min(1).max(4096)).max(32).parse(policy.SharedRoots ?? []);
+  if (values.some(value => !path.isAbsolute(value))) throw new Error('COORDINATOR_POLICY_INVALID: shared roots must be absolute');
+  return Promise.all(values.map(value => canonicalCoordinatorPath(value)));
+}
 async function registrations(root: string): Promise<Registration[]> {
+  const shared = await sharedRoots(root);
   const files = await fs.readdir(path.join(root, 'agents'));
   if (files.length > 5000) throw new Error('COORDINATOR_REGISTRY_INVALID: too many registrations.');
   const result: Registration[] = [];
   for (const file of files.filter(name => /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}\.json$/.test(name))) {
     const row = JSON.parse(await fs.readFile(path.join(root, 'agents', file), 'utf8')) as Registration;
     if (!row.AgentId || !row.Workspace || !path.isAbsolute(row.Workspace)) throw new Error('COORDINATOR_REGISTRY_INVALID: invalid registration.');
-    result.push({ ...row, Workspace: await canonicalCoordinatorPath(row.Workspace) });
+    const workspace = await canonicalCoordinatorPath(row.Workspace);
+    // Preserve historical broad registrations on disk without giving one chat ownership
+    // of a deliberately shared output root. Project subdirectories remain protected.
+    if (!shared.some(value => value.toLowerCase() === workspace.toLowerCase())) result.push({ ...row, Workspace: workspace });
   }
   return result;
 }
@@ -126,6 +140,7 @@ export async function ensureCoordinatorWorkspace(workspace: string): Promise<voi
   const principal = coordinatorPrincipal();
   if (!principal.startsWith('session:')) return;
   const target = await canonicalCoordinatorPath(workspace);
+  if ((await sharedRoots(root)).some(value => value.toLowerCase() === target.toLowerCase())) return;
   // A shared approved umbrella is not a project. Never claim a drive or the whole tools/vault root.
   if (path.parse(target).root === target) return;
   for (const approved of getConfig().roots) {
@@ -157,7 +172,7 @@ export async function ensureCoordinatorWriteWorkspace(value: string, preferred?:
   const target = await canonicalCoordinatorPath(value);
   if (preferred) {
     const workspace = await canonicalCoordinatorPath(preferred);
-    const umbrellas = await Promise.all(getConfig().roots.filter(root => !root.remote).map(root => canonicalCoordinatorPath(root.path)));
+    const umbrellas = [...await sharedRoots(coordinatorRoot()!), ...await Promise.all(getConfig().roots.filter(root => !root.remote).map(root => canonicalCoordinatorPath(root.path)))];
     if (contains(workspace, target) && !umbrellas.some(root => root.toLowerCase() === workspace.toLowerCase())) {
       await ensureCoordinatorWorkspace(workspace); return;
     }
