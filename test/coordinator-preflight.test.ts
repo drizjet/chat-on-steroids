@@ -6,6 +6,16 @@ import { afterEach, expect, it, vi } from 'vitest';
 // @ts-expect-error Maintenance entrypoint is deliberately dependency-free JavaScript.
 import { archiveSafety, inspect } from '../scripts/coordinator-preflight.mjs';
 const dirs: string[] = [];
+const helperNames = ['CoS-Agent.ps1', 'CoS-WorkspacePolicy.ps1', 'CoS-GuiLease.ps1', 'hardened-canary/CoS-JobRunner.cs'];
+async function helpers(registry: string) {
+  const files = [];
+  for (const name of helperNames) {
+    const file = path.join(registry, name), content = `synthetic helper ${name}`;
+    await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, content);
+    files.push({ path: name, sha256: createHash('sha256').update(content).digest('hex') });
+  }
+  await fs.writeFile(path.join(registry, 'COORDINATOR_COMPONENTS.json'), JSON.stringify({ build: 'COS_COORDINATOR_BUILD_20261027_R2', files }));
+}
 afterEach(async () => { vi.unstubAllGlobals(); for (const dir of dirs.splice(0)) await fs.rm(dir, { recursive: true, force: true }); });
 async function archive(main: string) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cos-preflight-')); dirs.push(dir);
@@ -27,6 +37,7 @@ it('does not mistake saved flags for active runtime flags after an external conf
   const root = path.dirname(file), data = path.join(root, 'data'), registry = path.join(root, 'registry');
   await fs.mkdir(path.join(root, 'resources')); await fs.copyFile(file, path.join(root, 'resources', 'app.asar'));
   await fs.mkdir(path.join(data, 'control-api'), { recursive: true }); await fs.mkdir(path.join(registry, 'agents'), { recursive: true });
+  await helpers(registry);
   await fs.writeFile(path.join(data, 'config.json'), JSON.stringify({ coordinator: { enabled: true, root: registry, autoRegisterSessions: true, protectUpdates: true } }));
   await fs.writeFile(path.join(data, 'control-api', 'endpoint.json'), JSON.stringify({ port: 1234 }));
   await fs.writeFile(path.join(data, 'control-api', 'token'), 'synthetic-local-token');
@@ -41,4 +52,13 @@ it('does not mistake saved flags for active runtime flags after an external conf
   expect((await inspect({ appRoot: root, dataRoot: data })).state).toBe('degraded');
   await fs.writeFile(path.join(data, 'config.json'), JSON.stringify({ coordinator: { enabled: true, root: registry, autoRegisterSessions: true, protectUpdates: true } }));
   expect((await inspect({ appRoot: root, dataRoot: data, registryRoot: other })).state).toBe('degraded');
+  expect((await inspect({ appRoot: root, dataRoot: data, offline: true })).state).toBe('configured-offline');
+  await fs.unlink(path.join(registry, 'CoS-Agent.ps1'));
+  expect((await inspect({ appRoot: root, dataRoot: data })).state).toBe('degraded');
+  await helpers(registry);
+  await fs.appendFile(path.join(registry, 'CoS-WorkspacePolicy.ps1'), '\nchanged');
+  expect((await inspect({ appRoot: root, dataRoot: data })).state).toBe('degraded');
+  await helpers(registry);
+  await fs.unlink(path.join(registry, 'COORDINATOR_COMPONENTS.json'));
+  expect((await inspect({ appRoot: root, dataRoot: data })).state).toBe('degraded');
 });

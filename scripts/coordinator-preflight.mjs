@@ -4,6 +4,23 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 
+const BUILD = 'COS_COORDINATOR_BUILD_20261027_R2';
+const REQUIRED_HELPERS = ['CoS-Agent.ps1', 'CoS-WorkspacePolicy.ps1', 'CoS-GuiLease.ps1', 'hardened-canary/CoS-JobRunner.cs'];
+
+async function helperIntegrity(root) {
+  try {
+    const receipt = JSON.parse((await readFile(path.join(root, 'COORDINATOR_COMPONENTS.json'), 'utf8')).replace(/^\uFEFF/, ''));
+    if (receipt.build !== BUILD || !Array.isArray(receipt.files) || receipt.files.length !== REQUIRED_HELPERS.length) throw new Error('Invalid helper receipt');
+    const files = await Promise.all(REQUIRED_HELPERS.map(async name => {
+      const entries = receipt.files.filter(item => item.path === name);
+      if (entries.length !== 1 || !/^[a-f0-9]{64}$/.test(entries[0].sha256)) throw new Error('Invalid helper receipt');
+      const digest = createHash('sha256').update(await readFile(path.join(root, name))).digest('hex');
+      return { path: name, matches: digest === entries[0].sha256 };
+    }));
+    return { verified: files.every(item => item.matches), files, error: files.some(item => !item.matches) ? 'Helper bytes differ from installation receipt' : null };
+  } catch (error) { return { verified: false, files: [], error: error.message }; }
+}
+
 export async function archiveSafety(archive) {
   const file = await open(archive, 'r');
   try {
@@ -28,6 +45,7 @@ export async function inspect({ appRoot, dataRoot, registryRoot, offline = false
   const code = await archiveSafety(path.join(appRoot, 'resources', 'app.asar'));
   const settings = config.coordinator;
   const root = registryRoot ?? settings?.root;
+  const helpers = root && path.isAbsolute(root) ? await helperIntegrity(root) : { verified: false, files: [], error: 'Missing absolute registry root' };
   let registrations = [], registryError = root && path.isAbsolute(root) ? null : 'Missing absolute registry root', lastAuditUtc = null;
   let shared = [];
   if (registryRoot && settings?.root && path.resolve(registryRoot).toLowerCase() !== path.resolve(settings.root).toLowerCase()) registryError = 'Requested registry differs from configured registry';
@@ -62,9 +80,9 @@ export async function inspect({ appRoot, dataRoot, registryRoot, offline = false
     ? createHash('sha256').update(path.resolve(settings.root).toLowerCase()).digest('hex') : null;
   const registryFingerprintMatches = offline ? null : configuredFingerprint !== null && live?.safety?.registryFingerprint === configuredFingerprint;
   const ready = code.present && settings?.enabled === true && settings.autoRegisterSessions === true && settings.protectUpdates === true
-    && !registryError && (offline || (live?.safety?.enabled === true && live.safety.build === 'COS_COORDINATOR_BUILD_20261027_R2'
+    && helpers.verified && !registryError && (offline || (live?.safety?.enabled === true && live.safety.build === BUILD
       && live.safety.autoRegisterSessions === true && live.safety.protectUpdates === true && registryFingerprintMatches));
-  return { state: ready ? 'ready-cooperative' : 'degraded', archive: code,
+  return { state: ready ? (offline ? 'configured-offline' : 'ready-cooperative') : 'degraded', archive: code, helpers,
     configured: { enabled: settings?.enabled === true, autoRegisterSessions: settings?.autoRegisterSessions === true, protectUpdates: settings?.protectUpdates === true, managedWorkerWorktrees: config.multiAgent?.autoWorktrees === true },
     registry: { count: registrations.length, sessionBound: registrations.filter(row => row.SessionId || row.Principal?.startsWith('session:')).length,
       sharedRoots: shared.length, sharedRootRegistrations: registrations.filter(row => shared.some(value => path.resolve(value).toLowerCase() === path.resolve(row.Workspace).toLowerCase())).length,
@@ -78,6 +96,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   try {
     const result = await inspect({ appRoot: value('--app') ?? path.join(process.env.LOCALAPPDATA, 'Programs', 'Chat On Steroids'),
       dataRoot: value('--data') ?? path.join(process.env.APPDATA, 'chat-on-steroids'), registryRoot: value('--root'), offline: args.includes('--offline') });
-    console.log(JSON.stringify(result, null, 2)); process.exitCode = result.state === 'ready-cooperative' ? 0 : 2;
+    console.log(JSON.stringify(result, null, 2)); process.exitCode = ['ready-cooperative', 'configured-offline'].includes(result.state) ? 0 : 2;
   } catch (error) { console.error(JSON.stringify({ state: 'degraded', error: error.message })); process.exitCode = 2; }
 }

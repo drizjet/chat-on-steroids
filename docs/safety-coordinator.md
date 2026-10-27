@@ -85,6 +85,15 @@ enabled state, enrollment and update-guard flags. It publishes no registry path 
 It includes a digest of the configured registry root. Preflight compares that digest with
 saved configuration, so an external root edit cannot falsely certify an old running registry.
 `node scripts/coordinator-preflight.mjs` checks the actual installed package, saved config,
-registry counts and live receipt. It returns exit code 2 for degraded coverage, and never
-equates a live tunnel or enabled setting with protection. `--offline` checks installed state
-without claiming live activation. `--app`, `--data` and `--root` support isolated fixtures.
+registry counts, native helper files and live receipt. Deployment creates
+`COORDINATOR_COMPONENTS.json` in the pilot root with the build marker and SHA-256 of
+`CoS-Agent.ps1`, `CoS-WorkspacePolicy.ps1`, `CoS-GuiLease.ps1` and
+`hardened-canary/CoS-JobRunner.cs`. Missing or changed helpers, or a missing/invalid receipt,
+degrade the result. This receipt detects accidental drift; it is not a signed trust boundary
+against another process with the same Windows account.
+The archive stager requires a new directory beneath an existing parent and refuses
+an existing destination before reading payloads, including the installed resources folder.
+The checker returns exit code 2 for degraded coverage and never equates a live tunnel or
+enabled setting with protection. `--offline` returns `configured-offline` after static checks,
+not `ready-cooperative`; it does not certify runtime activation. `--app`, `--data` and `--root`
+support isolated fixtures. Neither static hashes nor a live receipt prove a new tool action.

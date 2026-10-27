@@ -5290,6 +5290,8 @@ until the custom safety integration has a compatible build. The local `/v1/statu
 and `scripts/coordinator-preflight.mjs` distinguish live activation from saved configuration.
 The live registry fingerprint must match saved configuration. The pilot's shared-root policy
 prevents an exclusive claim on a shared output root while retaining project-child ownership.
+Preflight also requires the deployment's `COORDINATOR_COMPONENTS.json` and matching native
+helper hashes. Offline success is `configured-offline`, never evidence of runtime activation.
 Compatibility holds are settled policy and do not enter the short network retry schedule.
 `safety-coordinator.ts` owns request-derived principals, local path preflights and audit;
 the existing native helper owns the pilot's named GUI mutex across complete input transactions.
@@ -5675,10 +5677,12 @@ shared-tree change may already have addressed them.
   and phase rather than ordinary-turn idleness. Suspended-tab repair retains its separate
   existing action checks.
   Keep their operation-specific authority current through the browser action boundary.
-- **Goal publication:** explicit switch writes serialize, but mutate shared memory before
-  the awaited durable write; synchronous clear/move paths and objective/reply mutations do not
-  all share the same semantic transaction. Intent is durable commit before visible state, with
-  rollback unable to overwrite a newer accepted change.
+- **Goal publication:** explicit switch and objective saves stage their snapshots through
+  `saveGoalControl` and publish after durable acceptance. Synchronous clear/move paths and
+  some reply mutations still use separate/debounced persistence; they do not all share one
+  semantic transaction. Review those specific paths before claiming atomicity across all
+  Goal controls. Intent is durable commit before acknowledged visible state, with rollback
+  unable to overwrite a newer accepted change.
 - **Goal cross-ledger controls:** master/config/secret changes still cross separate ledgers.
   Attempt invalidation now preserves debt, but these remaining controls still need one durable
   semantic transaction and effective current-setting enforcement.
