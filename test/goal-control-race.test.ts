@@ -154,6 +154,52 @@ it('master clear retires queued enables even when their overrides have never bee
   expect(goal.goalArmedFor(TARGET)).toBe(false);
 });
 
+it('durable master clear waits for rename and retains helper identity across restart', async () => {
+  await goal.registerGoalDecisionChat('master-clear-helper');
+  await goal.setGoalSwitchNow(SOURCE, 'loop', true);
+  await flushDurable();
+  const gate = delayedWrite(goal.GOAL_SWITCHES_STATE);
+  let settled = false;
+  const cleared = observe(goal.clearAllGoalSwitchesNow().finally(() => { settled = true; }));
+  await gate.entered;
+  expect(settled).toBe(false);
+  expect(goal.goalSwitchFor(SOURCE).enabled).toBe(false);
+  expect(goal.isGoalDecisionChat('master-clear-helper')).toBe(true);
+  gate.release();
+  expect((await cleared).error).toBeUndefined();
+  const saved = await readDurable<GoalSwitchesSnapshot>(goal.GOAL_SWITCHES_STATE);
+  goal.restoreGoalSwitches(saved);
+  expect(goal.goalSwitchFor(SOURCE).own).toBe(false);
+  expect(goal.isGoalDecisionChat('master-clear-helper')).toBe(true);
+});
+
+it('failed durable master clear rejects acknowledgement without restoring enabled memory', async () => {
+  await goal.setGoalSwitchNow(SOURCE, 'loop', true);
+  await flushDurable();
+  const gate = delayedWrite(goal.GOAL_SWITCHES_STATE, true);
+  const cleared = observe(goal.clearAllGoalSwitchesNow());
+  await gate.entered;
+  expect(goal.goalSwitchFor(SOURCE).enabled).toBe(false);
+  gate.release();
+  expect((await cleared).error).toBeInstanceOf(Error);
+  expect(goal.goalSwitchFor(SOURCE).enabled).toBe(false);
+});
+
+it('a newer explicit enable commits after the durable master stop without being erased', async () => {
+  await goal.setGoalSwitchNow(SOURCE, 'loop', true);
+  await flushDurable();
+  const gate = delayedWrite(goal.GOAL_SWITCHES_STATE);
+  const cleared = observe(goal.clearAllGoalSwitchesNow());
+  await gate.entered;
+  const newer = observe(goal.setGoalSwitchNow(TARGET, 'goal', true));
+  gate.release();
+  expect((await cleared).error).toBeUndefined();
+  expect((await newer).error).toBeUndefined();
+  expect((await storedControls()).switches).toEqual([
+    expect.objectContaining({ conversationId: TARGET, enabled: true })
+  ]);
+});
+
 it('preserves a newer explicit Off after an earlier write rejects', async () => {
   await goal.setGoalSwitchNow(SOURCE, 'loop', true, true);
   const gate = delayedWrite(goal.GOAL_SWITCHES_STATE, true);

@@ -1186,6 +1186,20 @@ export function clearAllGoalSwitches(): void {
   persistGoalSwitches();
 }
 
+/** Settings must not acknowledge a master stop before its cleared overrides cross disk. */
+export async function clearAllGoalSwitchesNow(): Promise<void> {
+  // Stop live authority immediately and supersede any older queued enables.
+  // The barrier shares the immediate-control queue so a later explicit enable
+  // commits after this stop rather than being overwritten by its snapshot.
+  clearAllGoalSwitches();
+  await persistGoalSwitchesNow();
+}
+
+/** Flush the current projection without clearing newer per-chat choices on an Off retry. */
+export function persistGoalSwitchesNow(): Promise<void> {
+  return serialGoalSwitch(() => writeDurableNow(GOAL_SWITCHES_STATE, snapshotGoalSwitches()));
+}
+
 /** Drops one chat's override, putting it back under the app-wide setting. */
 export function clearGoalSwitch(conversationId: string): void {
   if (isGoalDecisionChat(conversationId)) return;

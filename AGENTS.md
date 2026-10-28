@@ -5693,8 +5693,13 @@ shared-tree change may already have addressed them.
   semantic transaction. Review those specific paths before claiming atomicity across all
   Goal controls. Intent is durable commit before acknowledged visible state, with rollback
   unable to overwrite a newer accepted change.
-- **Goal cross-ledger controls:** master/config/secret changes still cross separate ledgers.
-  Attempt invalidation now preserves debt, but these remaining controls still need one durable
+- **Goal cross-ledger controls:** config/secret changes still cross separate ledgers.
+  Master-Off now clears live overrides immediately and waits on the serialized durable switch
+  barrier before Settings acknowledges success; failure is reported after other runtime saves
+  finish. Already-Off Settings saves also flush the current projection, so a retry cannot
+  acknowledge an earlier failed clear; they preserve later explicit per-chat enables.
+  Helper identity survives. Attempt invalidation preserves
+  debt, but the remaining controls still need one durable
   semantic transaction and effective current-setting enforcement.
 
 Do not restore obsolete claims while investigating: two MCP surfaces, one global prime run,

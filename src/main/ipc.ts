@@ -84,7 +84,7 @@ import { effectiveCapabilities, getConfig, updateConfig, MAX_MCP_INSTRUCTIONS_CH
 import { UI_LANGUAGES } from '../shared/ui-language.js';
 import { PROJECT_COLORS } from '../shared/projects.js';
 import { bridgePortSelection } from './bridge-ports.js';
-import { clearAllGoalSwitches, draftTaskPlan, listGoalModels, MODEL_PAGE_SIZE, retireGoalDrafts, goalBackendFor, goalSwitchFor, setGoalSwitchNow, setGoalReplyActiveNow, setGoalObjectiveNow } from './goal.js';
+import { clearAllGoalSwitchesNow, persistGoalSwitchesNow, draftTaskPlan, listGoalModels, MODEL_PAGE_SIZE, retireGoalDrafts, goalBackendFor, goalSwitchFor, setGoalSwitchNow, setGoalReplyActiveNow, setGoalObjectiveNow } from './goal.js';
 import { forgetExposedSurface } from './mcp/server.js';
 import { runningToolActivity } from './mcp/call-context.js';
 import { onBackgroundExecChange, runningExecProcesses, stopExecProcess } from './codex/ownership.js';
@@ -841,7 +841,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
     // governs everything would govern only the chats that never disagreed with it — and a loop
     // somebody wanted stopped would go on running with nowhere obvious to switch it off.
     // Turning it *on* deliberately does not reach into a chat that has said no.
-    if (before.goal.enabled && !next.goal.enabled) clearAllGoalSwitches();
+    let goalStopPersistError: unknown;
+    if (!next.goal.enabled) {
+      // A failed Off save has already changed config. Its retry must still wait
+      // for disk while preserving any later explicit per-chat decisions.
+      try { await (before.goal.enabled ? clearAllGoalSwitchesNow() : persistGoalSwitchesNow()); }
+      catch (error) { goalStopPersistError = error; }
+    }
     // Explicit settings changes replace discovery's monotonic snapshot. Otherwise
     // disabled permissions/finish/session tools remain published and no schema change
     // reaches automatic plugin refresh. Cosmetic saves must not invalidate discovery.
@@ -919,7 +925,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
       logInfo('control API: actions ' + (next.controlApi.allowActions ? 'allowed' : 'refused'));
     }
     // Each of these came after the settings were written; the caller decides how to report it.
-    const lateError = authorityPersistError ?? runtimeError ?? loginStartupError ?? controlApiError ?? null;
+    const lateError = authorityPersistError ?? goalStopPersistError ?? runtimeError ?? loginStartupError ?? controlApiError ?? null;
     if (runtimeError) logWarn(`settings saved, but a later step failed: ${runtimeError instanceof Error ? runtimeError.message : String(runtimeError)}`);
     return { state: await buildState(), lateError };
   };

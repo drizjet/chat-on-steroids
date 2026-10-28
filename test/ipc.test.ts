@@ -91,6 +91,72 @@ const removeRoot = (payload: unknown): Promise<any> => handlers.get('roots:remov
 const sessionEvents = (payload: unknown): Promise<any> => handlers.get('sessions:events')!(null, payload) as Promise<any>;
 const sessionList = (): Promise<any> => handlers.get('sessions:list')!(null, undefined) as Promise<any>;
 
+it.each([false, true])('master Off waits for the actual override write before acknowledging Settings (reject=%s)', async reject => {
+  const goal = await import('../src/main/goal.js');
+  const previous = goal.snapshotGoalSwitches();
+  const originalRename = fs.rename.bind(fs);
+  const gate = faultGate();
+  const gates = [gate];
+  let first = true;
+  let pending: Promise<any> | undefined;
+  let rename: ReturnType<typeof vi.spyOn> | undefined;
+  try {
+    await saveConfig({ ...getConfig(), goal: { ...getConfig().goal, enabled: true } });
+    await goal.setGoalSwitchNow('ipc-master-stop', 'loop', true);
+    await flushDurable();
+    rename = vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (first && path.basename(String(to)) === `${goal.GOAL_SWITCHES_STATE}.json`) {
+        first = false;
+        await gate.hold();
+        if (reject) throw new Error('Rejected master-stop durable rename');
+      }
+      return originalRename(from, to);
+    });
+    let settled = false;
+    const base = getConfig();
+    pending = save({ ...base, goal: { ...base.goal, enabled: false } }, base)
+      .then(value => { settled = true; return value; });
+    await gate.entered;
+    expect(settled).toBe(false);
+    expect(getConfig().goal.enabled).toBe(false);
+    expect(goal.goalSwitchFor('ipc-master-stop').enabled).toBe(false);
+    gate.release();
+    const response = await pending;
+    expect(response.ok).toBe(!reject);
+    if (reject) {
+      rename.mockRestore();
+      const retryGate = faultGate();
+      gates.push(retryGate);
+      let retryFirst = true;
+      rename = vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+        if (retryFirst && path.basename(String(to)) === `${goal.GOAL_SWITCHES_STATE}.json`) {
+          retryFirst = false;
+          await retryGate.hold();
+        }
+        return originalRename(from, to);
+      });
+      let retrySettled = false;
+      const retryBase = getConfig();
+      pending = save(retryBase, retryBase).then(value => { retrySettled = true; return value; });
+      await retryGate.entered;
+      expect(retrySettled).toBe(false);
+      retryGate.release();
+      expect((await pending).ok).toBe(true);
+    }
+    if (!reject) {
+      const disk = await readDurable<Parameters<typeof goal.restoreGoalSwitches>[0]>(goal.GOAL_SWITCHES_STATE);
+      goal.restoreGoalSwitches(disk);
+      expect(goal.goalSwitchFor('ipc-master-stop').enabled).toBe(false);
+    }
+  } finally {
+    for (const held of gates) held.release();
+    if (pending) await pending;
+    rename?.mockRestore();
+    goal.restoreGoalSwitches(previous);
+    await writeDurableNow(goal.GOAL_SWITCHES_STATE, previous);
+  }
+});
+
 it('keeps the reported interface language and the extension preferences through a Settings save', async () => {
   // Neither is part of the settings form. The save replaces the whole `ui` object, so both must be
   // carried through, or the extension would lose its language and its kept preferences.
