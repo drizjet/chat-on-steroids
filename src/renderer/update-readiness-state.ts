@@ -1,7 +1,7 @@
 import type { AppState } from '../shared/types.js';
 import { isNewer } from '../shared/types.js';
 import { t } from './i18n.js';
-import { updateErrorText } from './update-error.js';
+import { isCoordinatorUpdateReviewRequired, updateErrorNextStep, updateErrorText } from './update-error.js';
 
 interface ReadinessRow {
   id: string;
@@ -16,8 +16,10 @@ interface ReadinessRow {
 /** Projects existing owners only. Unknown, old proof and a dismissed reminder cannot pass. */
 export function updateReadiness(next: AppState): ReadinessRow[] {
   const { update, bridge, status } = next;
+  const coordinatorReviewRequired = isCoordinatorUpdateReviewRequired(update.error);
   const appReady = update.stage === 'idle' && !update.latest && update.checkedAt != null;
-  const appDetail = update.stage === 'failed' ? t('Update check failed')
+  const appDetail = update.stage === 'failed'
+    ? coordinatorReviewRequired ? t('Held for compatibility review') : t('Update check failed')
     : update.stage === 'checking' ? t('Checking for a newer version…')
     : update.stage === 'downloading' ? t('Downloading {0}', [update.latest])
     : update.latest ? (update.stage === 'ready' ? t('Ready to install {0}', [update.latest]) : t('Install {0} manually', [update.latest]))
@@ -30,7 +32,8 @@ export function updateReadiness(next: AppState): ReadinessRow[] {
     { id: 'app', label: 'Chat On Steroids', status: appReady ? 'pass' : update.stage === 'failed' ? 'fail' : 'not-run',
       detail: t('Version {0}', [update.current]) + ' · ' + appDetail,
       reason: update.stage === 'failed' && update.error ? updateErrorText(update.error) : undefined,
-      nextStep: update.stage === 'failed' ? t('Choose Update all to retry. You can keep using the current app.')
+      nextStep: update.stage === 'failed' ? coordinatorReviewRequired && update.error ? updateErrorNextStep(update.error)
+        : t('Choose Update all to retry. You can keep using the current app.')
         : next.platform?.family === 'macos' && update.stage === 'idle' && update.latest
           ? t('Finish active work and fully quit Chat On Steroids. Replace the app in /Applications, then open the updated app from there.') : undefined },
     { id: 'extension', label: t('Browser extension'), status: extensionReady ? 'pass' : 'not-run',

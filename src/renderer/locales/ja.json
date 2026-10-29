@@ -3395,5 +3395,11 @@
   "Commit from Review": "レビューからコミット",
   "Commit the chosen files, then push and open a pull request.": "選んだファイルをコミットし、プッシュしてプルリクエストを開けます。",
   "Your own chat style": "自分のチャットスタイル",
-  "Rewrite how ChatGPT talks and writes in new chats.": "新しいチャットで ChatGPT がどう話し、どう書くかを書き換えられます。"
+  "Rewrite how ChatGPT talks and writes in new chats.": "新しいチャットで ChatGPT がどう話し、どう書くかを書き換えられます。",
+  "A compatible coordinator build needs review before this update can be activated.": "このアップデートを有効にする前に、互換性のあるコーディネーター ビルドのレビューが必要です。",
+  "Prepare and verify a compatible coordinator build before activation.": "有効にする前に、互換性のあるコーディネーター ビルドを準備して検証してください。",
+  "Chat On Steroids {0} is held for compatibility review. Prepare and verify a compatible coordinator build before activation.": "Chat On Steroids {0} は互換性レビュー待ちです。アップデートを有効にする前に、互換性のあるコーディネーター ビルドを準備して検証してください。",
+  "Held for compatibility review": "互換性レビュー待ち",
+  "Standing instructions for Core and Desktop": "Core と Desktop の常設指示",
+  "Added to both connector instructions. Worker model or reasoning preferences are used only when available in this account.": "両方のコネクタの指示に追加されます。Worker のモデルや推論の設定は、このアカウントで利用できる場合にのみ使用されます。"
 }

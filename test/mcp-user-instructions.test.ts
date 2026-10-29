@@ -112,6 +112,13 @@ describe('the user’s own connector instructions', () => {
     expect(text).not.toMatch(/This is Chat On Steroids|https:\/\/chatgpt.com\/#settings\/Plugins/);
     expect(serverInstructions(ctx, 'core', 'linux')).toContain('Chat On Steroids Desktop');
   });
+
+  it('accepts explicit standing worker preferences while preserving account-observed choices', () => {
+    const text = serverInstructions({ ...ctx, agentTools: true }, 'core', 'win32');
+    expect(text).toContain('unless the user explicitly asks for an override in this turn or in standing connector instructions');
+    expect(text).toContain('Use only an exact model id or provider alias and an effort observed in this account');
+    expect(text).toContain('never substitute a different model.');
+  });
   it('routes Linux browser users to Core for files without advertising native desktop tools', () => {
     const text = serverInstructions(ctx, 'desktop', 'linux');
     expect(text).toContain('browser_snapshot');

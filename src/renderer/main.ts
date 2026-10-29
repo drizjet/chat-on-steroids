@@ -16,7 +16,7 @@ import { initRecordingStorageSetting, paintRecordingStorageNotice, paintRecordin
 import { paintCredentialsNotice } from './credentials-notice.js';
 import { paintPluginRefreshOffer } from './plugin-refresh-offer.js';
 import { initUpdateReadiness, paintUpdateReadiness } from './update-readiness.js';
-import { updateErrorText } from './update-error.js';
+import { isCoordinatorUpdateReviewRequired, updateErrorText } from './update-error.js';
 import { initUsage, refreshOtherApps, refreshUsage } from './usage.js';
 import { initSidebarResize } from './sidebar-resize.js';
 import { initAppShortcuts } from './app-shortcuts.js';
@@ -87,6 +87,8 @@ initLayoutPreviews();
 // Composer key hints name this computer's keys only: a Windows user never reads ⌘ first.
 ui($('followUpHint'), 'textContent', () => t('What a message you send while ChatGPT works does by default. {0} sends it the other way.', [primaryShiftShortcut(t('Enter'))]));
 ui($('enterSendsHint'), 'textContent', () => t('Which key sends what you type. With {0}, Enter starts a new line.', [primaryShortcut(t('Enter'))]));
+ui($('mcpInstructionsLabel'), 'textContent', () => t('Standing instructions for Core and Desktop'));
+ui($('mcpInstructionsHint'), 'textContent', () => t('Added to both connector instructions. Worker model or reasoning preferences are used only when available in this account.'));
 ui($('enterSendsModifier'), 'textContent', () => primaryShortcut(t('Enter')));
 let pluginRefreshResetBusy = false;
 let pluginRefreshResetFailed = false;
@@ -807,8 +809,7 @@ function save(over: { readOnly?: boolean; theme?: 'light' | 'dark'; appearance?:
     controlApi: { enabled: $<HTMLInputElement>('controlApiEnabled').checked, allowActions: $<HTMLInputElement>('controlApiAllowActions').checked },
     projects: { codeCheckpoints: $<HTMLInputElement>('codeCheckpoints').checked },
     ...chatPatch,
-    // After the chat patch, which still carries the stored mcp settings it no longer edits.
-    mcp: { instructions: previous.mcp?.instructions ?? '', persistentUrls: $<HTMLInputElement>('mcpPersistentUrls').checked }
+    mcp: { instructions: $<HTMLTextAreaElement>('mcpInstructions').value, persistentUrls: $<HTMLInputElement>('mcpPersistentUrls').checked }
   };
   requestedSettings = patch;
 
@@ -1286,6 +1287,7 @@ function updateSummary({ bridge, update, config, status }: AppState): { text: st
   if (!stale && !missing && !update.latest && update.stage === 'idle' && !update.checkedAt && !update.notInstalled) return null;
 
   const lines: string[] = [];
+  const reviewRequired = isCoordinatorUpdateReviewRequired(update.error);
   let tone: UpdateTone = 'work';
   // #1490: an installer that stopped silently left this start on the old version.
   if (update.notInstalled) {
@@ -1304,7 +1306,9 @@ function updateSummary({ bridge, update, config, status }: AppState): { text: st
         : update.stage === 'downloading'
           ? t("Chat On Steroids {0} is downloading. Keep working; you can install it when it lands.", [update.latest])
           : update.stage === 'failed'
-            ? t("Chat On Steroids {0} could not be downloaded: {1}.", [update.latest, update.error ? updateErrorText(update.error) : t("the download stopped")])
+            ? reviewRequired
+              ? t("Chat On Steroids {0} is held for compatibility review. Prepare and verify a compatible coordinator build before activation.", [update.latest])
+              : t("Chat On Steroids {0} could not be downloaded: {1}.", [update.latest, update.error ? updateErrorText(update.error) : t("the download stopped")])
             : t("Chat On Steroids {0} is out. This installation has to be updated by hand.", [update.latest])
     );
     if (update.stage === 'failed' || update.notInstalled) tone = 'bad';
@@ -1348,7 +1352,7 @@ function paintUpdate(next: AppState): void {
   ui($('updateText'), 'textContent', () => updateSummary(next)?.text ?? '');
   $('updateExtension').hidden = !summary.extensionAction;
   ui($('updateExtension'), 'textContent', () => updateSummary(next)?.extensionAction ?? t("Update extension"));
-  $<HTMLButtonElement>('updateGet').hidden = !update.latest || update.stage === 'checking' || update.stage === 'downloading' || update.stage === 'ready';
+  $<HTMLButtonElement>('updateGet').hidden = !update.latest || isCoordinatorUpdateReviewRequired(update.error) || update.stage === 'checking' || update.stage === 'downloading' || update.stage === 'ready';
   // `ready` is the only state with a verified artifact on disk, and therefore the only one in
   // which pressing Install can do anything. Both buttons ask the same question of the same fact.
   const installable = update.stage === 'ready';
@@ -1793,6 +1797,7 @@ function apply(next: AppState): void {
   applyChecked($<HTMLInputElement>('controlApiEnabled'), config.controlApi?.enabled === true, previousState?.config.controlApi?.enabled);
   applyChecked($<HTMLInputElement>('codeCheckpoints'), config.projects?.codeCheckpoints === true, previousState?.config.projects?.codeCheckpoints);
   applyChecked($<HTMLInputElement>('mcpPersistentUrls'), config.mcp?.persistentUrls === true, previousState?.config.mcp?.persistentUrls);
+  applyValue($<HTMLTextAreaElement>('mcpInstructions'), config.mcp?.instructions ?? '', previousState?.config.mcp?.instructions);
   // Stable URLs live only in the OS-backed secret store; without it they keep rotating.
   $<HTMLInputElement>('mcpPersistentUrls').disabled = next.secureStorage?.available === false && config.mcp?.persistentUrls !== true;
   // Another program held the kept port at this start: the tunnel must follow the new one.
@@ -2929,6 +2934,7 @@ for (const id of [
   'controlApiAllowActions',
   'codeCheckpoints',
   'mcpPersistentUrls',
+  'mcpInstructions',
   'privacyScreenshots',
   'phonePushEnabled',
   'phonePushTopic',

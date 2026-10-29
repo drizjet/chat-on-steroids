@@ -1,7 +1,16 @@
 import { t } from './i18n.js';
 
+const coordinatorReviewPrefix = 'COORDINATOR_UPDATE_REVIEW_REQUIRED:';
+
+export function isCoordinatorUpdateReviewRequired(source: string | null | undefined): boolean {
+  return source?.startsWith(coordinatorReviewPrefix) ?? false;
+}
+
 /** Localize the updater's authored reasons; unknown external diagnostics remain verbatim. */
 export function updateErrorText(source: string): string {
+  if (isCoordinatorUpdateReviewRequired(source)) {
+    return t('A compatible coordinator build needs review before this update can be activated.');
+  }
   switch (source) {
     case 'GitHub could not be reached':
       return t('GitHub could not be reached. Check your connection');
@@ -30,6 +39,9 @@ export function updateErrorText(source: string): string {
 }
 
 export function updateErrorNextStep(source: string): string {
+  if (isCoordinatorUpdateReviewRequired(source)) {
+    return t('Prepare and verify a compatible coordinator build before activation.');
+  }
   return source === 'Could not read plugin-refresh state'
     ? t('Save a Diagnostics report from Activity for help with recovery. The saved state has been kept.')
     : t('Choose Update all to retry.');

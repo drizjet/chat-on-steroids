@@ -3395,5 +3395,11 @@
   "Commit from Review": "从审阅提交",
   "Commit the chosen files, then push and open a pull request.": "提交所选文件，然后推送并创建拉取请求。",
   "Your own chat style": "你自己的聊天风格",
-  "Rewrite how ChatGPT talks and writes in new chats.": "改写 ChatGPT 在新聊天中说话和写作的方式。"
+  "Rewrite how ChatGPT talks and writes in new chats.": "改写 ChatGPT 在新聊天中说话和写作的方式。",
+  "A compatible coordinator build needs review before this update can be activated.": "激活此更新前，必须先审查兼容的协调器构建版本。",
+  "Prepare and verify a compatible coordinator build before activation.": "激活前，请准备并验证兼容的协调器构建版本。",
+  "Chat On Steroids {0} is held for compatibility review. Prepare and verify a compatible coordinator build before activation.": "Chat On Steroids {0} 已暂停，等待兼容性审查。激活更新前，请准备并验证兼容的协调器构建版本。",
+  "Held for compatibility review": "等待兼容性审查",
+  "Standing instructions for Core and Desktop": "Core 和 Desktop 的长期指令",
+  "Added to both connector instructions. Worker model or reasoning preferences are used only when available in this account.": "这些内容会添加到两个连接器的指令中。仅当此账户支持时，才会使用 worker 模型或推理偏好。"
 }

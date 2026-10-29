@@ -3596,5 +3596,11 @@
   "Commit from Review": "Коммит из «Проверки»",
   "Commit the chosen files, then push and open a pull request.": "Закоммитьте выбранные файлы, затем отправьте их и откройте pull request.",
   "Your own chat style": "Ваш стиль чата",
-  "Rewrite how ChatGPT talks and writes in new chats.": "Задайте, как ChatGPT говорит и пишет в новых чатах."
+  "Rewrite how ChatGPT talks and writes in new chats.": "Задайте, как ChatGPT говорит и пишет в новых чатах.",
+  "A compatible coordinator build needs review before this update can be activated.": "Перед активацией этого обновления необходимо проверить совместимую сборку координатора.",
+  "Prepare and verify a compatible coordinator build before activation.": "Подготовьте и проверьте совместимую сборку координатора перед активацией.",
+  "Chat On Steroids {0} is held for compatibility review. Prepare and verify a compatible coordinator build before activation.": "Chat On Steroids {0} ожидает проверки совместимости. Подготовьте и проверьте совместимую сборку координатора, прежде чем активировать обновление.",
+  "Held for compatibility review": "Ожидает проверки совместимости",
+  "Standing instructions for Core and Desktop": "Постоянные инструкции для Core и Desktop",
+  "Added to both connector instructions. Worker model or reasoning preferences are used only when available in this account.": "Добавляются к инструкциям обоих коннекторов. Предпочтения модели или режима рассуждения worker применяются, только если доступны в этом аккаунте."
 }

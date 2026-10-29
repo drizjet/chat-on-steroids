@@ -3395,5 +3395,11 @@
   "Commit from Review": "Commit từ Xem lại",
   "Commit the chosen files, then push and open a pull request.": "Commit các tệp đã chọn, rồi push và mở pull request.",
   "Your own chat style": "Phong cách trò chuyện của bạn",
-  "Rewrite how ChatGPT talks and writes in new chats.": "Viết lại cách ChatGPT nói và viết trong các cuộc trò chuyện mới."
+  "Rewrite how ChatGPT talks and writes in new chats.": "Viết lại cách ChatGPT nói và viết trong các cuộc trò chuyện mới.",
+  "A compatible coordinator build needs review before this update can be activated.": "Cần xem xét bản dựng bộ điều phối tương thích trước khi kích hoạt bản cập nhật này.",
+  "Prepare and verify a compatible coordinator build before activation.": "Hãy chuẩn bị và xác minh bản dựng bộ điều phối tương thích trước khi kích hoạt.",
+  "Chat On Steroids {0} is held for compatibility review. Prepare and verify a compatible coordinator build before activation.": "Chat On Steroids {0} đang được giữ để xem xét khả năng tương thích. Hãy chuẩn bị và xác minh bản dựng bộ điều phối tương thích trước khi kích hoạt bản cập nhật.",
+  "Held for compatibility review": "Đang chờ xem xét khả năng tương thích",
+  "Standing instructions for Core and Desktop": "Hướng dẫn thường trực cho Core và Desktop",
+  "Added to both connector instructions. Worker model or reasoning preferences are used only when available in this account.": "Được thêm vào hướng dẫn của cả hai trình kết nối. Tùy chọn mô hình hoặc suy luận của worker chỉ được dùng khi tài khoản này hỗ trợ."
 }

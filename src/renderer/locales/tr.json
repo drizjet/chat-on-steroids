@@ -3462,5 +3462,11 @@
   "Commit from Review": "İnceleme'den commit",
   "Commit the chosen files, then push and open a pull request.": "Seçtiğiniz dosyaları commit edin, ardından push edip bir pull request açın.",
   "Your own chat style": "Kendi sohbet tarzınız",
-  "Rewrite how ChatGPT talks and writes in new chats.": "ChatGPT'nin yeni sohbetlerde nasıl konuşup yazdığını yeniden yazın."
+  "Rewrite how ChatGPT talks and writes in new chats.": "ChatGPT'nin yeni sohbetlerde nasıl konuşup yazdığını yeniden yazın.",
+  "A compatible coordinator build needs review before this update can be activated.": "Bu güncelleme etkinleştirilmeden önce uyumlu bir koordinatör derlemesinin incelenmesi gerekir.",
+  "Prepare and verify a compatible coordinator build before activation.": "Etkinleştirmeden önce uyumlu bir koordinatör derlemesi hazırlayıp doğrulayın.",
+  "Chat On Steroids {0} is held for compatibility review. Prepare and verify a compatible coordinator build before activation.": "Chat On Steroids {0}, uyumluluk incelemesi için bekletiliyor. Güncellemeyi etkinleştirmeden önce uyumlu bir koordinatör derlemesi hazırlayıp doğrulayın.",
+  "Held for compatibility review": "Uyumluluk incelemesi bekleniyor",
+  "Standing instructions for Core and Desktop": "Core ve Desktop için kalıcı talimatlar",
+  "Added to both connector instructions. Worker model or reasoning preferences are used only when available in this account.": "Her iki bağlayıcının talimatlarına eklenir. Worker model veya akıl yürütme tercihleri yalnızca bu hesapta kullanılabiliyorsa uygulanır."
 }

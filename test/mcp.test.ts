@@ -733,7 +733,7 @@ describe('surface boundaries', () => {
     everything();
     const agentsTool = toolList(await core('tools/list')).find((tool) => tool.name === 'agents')!;
     expect(agentsTool.description).toBe(
-      'Runs ChatGPT workers. Without model/reasoning_effort, saved app defaults apply; they are set only for a user’s explicit request. A suitable sleeping worker is reused with message, not respawned. ' +
+      'Runs ChatGPT workers. Saved app defaults apply unless the user explicitly asks for a model or effort in this turn or in standing connector instructions. A suitable sleeping worker is reused with message, not respawned. ' +
       'message: prime↔worker. Reports arrive with tool results, not by restarting an idle prime. ' +
       'status: your active, sleeping/revivable and terminal workers, incl. parked families, and pending reports; one call before a final answer collects them. Repeated polling adds nothing. finish: records the report, then normally sleeps.'
     );
@@ -767,10 +767,10 @@ describe('surface boundaries', () => {
       'This worker\'s job: objective, relevant files, constraints and expected handoff.'
     );
     expect(worker.properties.model.description).toBe(
-      'Only for a model the user asked for; app settings supply the default. An exact account-observed model id or provider alias. Invalid overrides return observed ids before opening; the browser checks availability before Send.'
+      'Only for a model the user explicitly requests this turn or in standing connector instructions; app settings supply the default. Overrides use account-observed ids or provider aliases. Invalid choices return observed ids before opening; browser checks availability before Send.'
     );
     expect(worker.properties.reasoning_effort.description).toBe(
-      'Only for an effort the user asked for; app settings supply the default. Selects reasoning only, never a model.'
+      'Only for an effort the user explicitly requests this turn or in standing connector instructions; app settings supply the default. Selects reasoning only, never a model.'
     );
     const targetRunOverhead = Buffer.byteLength(
       `,"target_run_id":${JSON.stringify(agentsTool.inputSchema.properties.target_run_id)}`,

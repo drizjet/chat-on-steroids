@@ -3529,5 +3529,11 @@
   "Commit from Review": "Commit a partir da Revisão",
   "Commit the chosen files, then push and open a pull request.": "Faça commit dos ficheiros escolhidos, depois push e abra um pull request.",
   "Your own chat style": "O seu próprio estilo de chat",
-  "Rewrite how ChatGPT talks and writes in new chats.": "Reescreva como o ChatGPT fala e escreve nos chats novos."
+  "Rewrite how ChatGPT talks and writes in new chats.": "Reescreva como o ChatGPT fala e escreve nos chats novos.",
+  "A compatible coordinator build needs review before this update can be activated.": "É necessária a revisão de uma versão compatível do coordenador antes de ativar esta atualização.",
+  "Prepare and verify a compatible coordinator build before activation.": "Prepare e verifique uma versão compatível do coordenador antes da ativação.",
+  "Chat On Steroids {0} is held for compatibility review. Prepare and verify a compatible coordinator build before activation.": "Chat On Steroids {0} está a aguardar uma revisão de compatibilidade. Prepare e verifique uma versão compatível do coordenador antes de a ativar.",
+  "Held for compatibility review": "A aguardar revisão de compatibilidade",
+  "Standing instructions for Core and Desktop": "Instruções permanentes para Core e Desktop",
+  "Added to both connector instructions. Worker model or reasoning preferences are used only when available in this account.": "Adicionadas às instruções dos dois conectores. Preferências de modelo ou raciocínio dos workers só são usadas quando disponíveis nesta conta."
 }
