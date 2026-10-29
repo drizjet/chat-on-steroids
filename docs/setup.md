@@ -122,7 +122,7 @@ Send POST requests to `/v1/workers/{ownerId}/spawn` to start workers,
 `/v1/workers/{ownerId}/ack` to acknowledge report IDs.
 Reports repeat until the caller acknowledges them. All five worker routes return 403
 when either switch is off. The other read routes remain available.
-The [worker API contract](../AGENTS.md#18-desktop-workspace-plugins-connection-and-native-control)
+The [worker API contract](AGENT_REFERENCE.md#18-desktop-workspace-plugins-connection-and-native-control)
 lists the request fields and limits.
 For a CLI and agent skill, see [cos-bridge](https://github.com/abdulsalamgs/cos-bridge).
 
