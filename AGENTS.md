@@ -4025,7 +4025,9 @@ values stay visible until the user changes them or selects another model. Custom
 manual effort selection. Exact effort values, including Max and Extra high, pass through the API
 request; the browser-helper reasoning setting remains separate. Secrets remain in the main process's encrypted store. Custom endpoints
 receive the explicitly assembled reference context; local recording is not a promise that
-Goal API requests stay on the device.
+Goal API requests stay on the device. Provider failures retain status/category plus bounded body
+length and a short SHA-256 fingerprint; raw provider error prose and malformed model-body samples
+do not enter persistent diagnostics.
 
 The driver context includes canonical authored user messages, stable assistant interim/progress
 and final text. **Interim messages remain included when Thinking failed leaves no final answer**:
@@ -5694,13 +5696,13 @@ shared-tree change may already have addressed them.
   Goal controls. Intent is durable commit before acknowledged visible state, with rollback
   unable to overwrite a newer accepted change.
 - **Goal cross-ledger controls:** config/secret changes still cross separate ledgers.
-  Master-Off now clears live overrides immediately and waits on the serialized durable switch
-  barrier before Settings acknowledges success; failure is reported after other runtime saves
-  finish. Already-Off Settings saves also flush the current projection, so a retry cannot
-  acknowledge an earlier failed clear; they preserve later explicit per-chat enables.
-  Helper identity survives. Attempt invalidation preserves
-  debt, but the remaining controls still need one durable
-  semantic transaction and effective current-setting enforcement.
+  Master-Off clears live overrides, retires current reply obligations, fences acceptances that
+  began before the stop and waits for durable switch and reply ledgers before Settings acknowledges
+  success; failure is reported after other runtime saves finish. Already-Off Settings saves flush
+  both current projections on retry and preserve later explicit per-chat enables. Helper identity
+  survives. The ledgers remain separate commits, not one cross-ledger semantic transaction.
+  Attempt invalidation preserves debt, but the remaining controls still need effective
+  current-setting enforcement.
 
 Do not restore obsolete claims while investigating: two MCP surfaces, one global prime run,
 three browser command kinds, fixed 60s Unattributed repair, tab-query

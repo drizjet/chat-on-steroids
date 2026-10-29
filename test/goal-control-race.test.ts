@@ -16,7 +16,7 @@ vi.mock('electron', () => ({
 
 const { defaultConfig, initConfigPath, saveConfig } = await import('../src/main/config.js');
 const { initDurableStore, resetDurableForTests, flushDurable, readDurable, writeDurableNow } = await import('../src/main/durable.js');
-const { initSessionStore, resetSessionStoreForTests } = await import('../src/main/session/store.js');
+const { appendEvent, createSession, initSessionStore, resetSessionStoreForTests } = await import('../src/main/session/store.js');
 const goal = await import('../src/main/goal.js');
 const SOURCE = 'control-source';
 const TARGET = 'control-target';
@@ -198,6 +198,49 @@ it('a newer explicit enable commits after the durable master stop without being 
   expect((await storedControls()).switches).toEqual([
     expect.objectContaining({ conversationId: TARGET, enabled: true })
   ]);
+});
+
+it('does not publish an automatic Loop reply after master Off wins an awaited MCP check', async () => {
+  const session = await createSession({ title: 'loop race', conversationId: SOURCE });
+  await appendEvent(session.id, {
+    time: 100, source: 'mcp', kind: 'tool_call', turnId: 'loop-source', call: {
+      callId: 'control-race-call', tool: 'read', attribution: 'request_id', requestId: 'control-race-request',
+      conversationId: SOURCE, attributionMethod: 'request_id', outcome: 'ok', durationMs: 1,
+      args: { text: '{}', chars: 2, truncated: false },
+      result: { text: 'ok', chars: 2, truncated: false },
+      summary: { kind: 'run', tone: 'neutral', title: 'Read project state' }
+    }
+  });
+  const config = (await import('../src/main/config.js')).getConfig();
+  await saveConfig({ ...config, goal: { ...config.goal, enabled: true, mode: 'loop', backend: 'templates', loopBackend: 'chatgpt' } });
+
+  const store = await import('../src/main/session/store.js');
+  const readSession = store.getSession.bind(store);
+  const gate = faultGate();
+  releaseWrites.push(gate.release);
+  let reads = 0;
+  const lookup = vi.spyOn(store, 'getSession').mockImplementation(async sessionId => {
+    const row = await readSession(sessionId);
+    if (++reads === 2) await gate.hold(); // astraFinishOnly completed; Loop proof is now pending.
+    return row;
+  });
+  const accepting = observe(goal.acceptGoalReplyNow({
+    conversationId: SOURCE, sessionId: session.id, replyId: 'assistant-loop-race',
+    turnId: 'loop-source', eventSeq: 2, blocked: false
+  }));
+  await gate.entered;
+
+  const current = (await import('../src/main/config.js')).getConfig();
+  await saveConfig({ ...current, goal: { ...current.goal, enabled: false } });
+  goal.retireGoalDrafts(true);
+  expect((await observe(goal.clearAllGoalSwitchesNow())).error).toBeUndefined();
+
+  gate.release();
+  expect((await accepting).error).toBeUndefined();
+  expect(goal.goalPendingReplyFor(SOURCE)).toBeNull();
+  const saved = await readDurable<Parameters<typeof goal.restoreGoalReplies>[0]>(goal.GOAL_REPLIES_STATE);
+  expect(saved?.replies).toContainEqual(expect.objectContaining({ replyId: 'assistant-loop-race', state: 'handled' }));
+  lookup.mockRestore();
 });
 
 it('preserves a newer explicit Off after an earlier write rejects', async () => {

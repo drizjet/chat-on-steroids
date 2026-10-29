@@ -1466,6 +1466,32 @@ describe('when OpenRouter refuses', () => {
     }
   });
 
+  it('keeps provider and malformed model body text out of persistent diagnostics', async () => {
+    const logger = await import('../src/main/logger.js');
+    const firstEntry = logger.getLog().length;
+    const errorSession = await seed('c-private-provider-body');
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      error: { message: 'PRIVATE_PROVIDER_BODY canary provider-only-details' }
+    }), { status: 429 })) as never;
+    goal.startGoalDraft({ sessionId: errorSession, conversationId: 'c-private-provider-body', turnId: 'g-1' });
+    const failure = await settled('c-private-provider-body');
+    expect(failure.error).toContain('rate_limited');
+    expect(failure.error).toContain('sha256:');
+    expect(failure.error).not.toContain('PRIVATE_PROVIDER_BODY');
+
+    const malformedSession = await seed('c-private-model-body');
+    globalThis.fetch = (async () => Response.json({ choices: [{ message: { content: 'PRIVATE_MODEL_BODY canary model-only-details' } }] })) as never;
+    goal.startGoalDraft({ sessionId: malformedSession, conversationId: 'c-private-model-body', turnId: 'g-1' });
+    expect((await settled('c-private-model-body')).error).toBe('invalid_goal_decision_json');
+
+    const diagnostic = logger.getLog().slice(firstEntry).map(entry => entry.message).join('\n');
+    expect(diagnostic).not.toContain('PRIVATE_PROVIDER_BODY');
+    expect(diagnostic).not.toContain('canary provider-only-details');
+    expect(diagnostic).not.toContain('PRIVATE_MODEL_BODY');
+    expect(diagnostic).not.toContain('canary model-only-details');
+    expect(diagnostic).toContain('sha256:');
+  });
+
   it('keeps a failure the page cannot retry on screen after the page acknowledged it (#584)', async () => {
     // 402: nothing will change until the user adds credit, so the page does not retry. It shows the
     // reason and acknowledges the draft. The failure must stay the chat's Goal state: hiding it left

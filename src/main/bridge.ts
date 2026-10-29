@@ -3191,7 +3191,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
             conversationId: id,
             sessionId: result.sessionId!,
             ...candidate,
-            blocked: superseded || goalFencedChat(id)
+            blocked: superseded || goalFencedChat(id),
+            current: () => !superseded && !goalFencedChat(id)
           });
         }
       } catch (err) {
@@ -4350,7 +4351,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         replyId: `turn:${turnId}`.slice(0, 200),
         turnId,
         eventSeq: 0,
-        blocked: false
+        blocked: false,
+        current: () => !goalFencedChat(id)
       });
     } catch (err) {
       discardPreparedGoalDraft(id, draft.token);

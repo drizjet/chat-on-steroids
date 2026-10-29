@@ -157,6 +157,91 @@ it.each([false, true])('master Off waits for the actual override write before ac
   }
 });
 
+it('master Off waits for reply tombstones and an already-Off retry preserves later chat choices', async () => {
+  const goal = await import('../src/main/goal.js');
+  const previousSwitches = goal.snapshotGoalSwitches();
+  const previousReplies = goal.snapshotGoalReplies();
+  const originalRename = fs.rename.bind(fs);
+  const replySnapshot = {
+    version: 1 as const,
+    savedAt: Date.now(),
+    replies: [{
+      conversationId: 'ipc-master-reply', sessionId: 'ipc-reply-session', replyId: 'assistant-ipc-reply',
+      turnId: 'ipc-reply-turn', eventSeq: 3, acceptedAt: Date.now(), state: 'pending' as const
+    }]
+  };
+  const gates = [faultGate(), faultGate(), faultGate()];
+  const switchGate = gates[0]!;
+  const failedReplyGate = gates[1]!;
+  const retryReplyGate = gates[2]!;
+  let pending: Promise<any> | undefined;
+  let rename: ReturnType<typeof vi.spyOn> | undefined;
+  let switchFirst = true;
+  let replyFirst = true;
+  try {
+    const enabled = getConfig();
+    await saveConfig({ ...enabled, goal: { ...enabled.goal, enabled: true } });
+    await goal.setGoalSwitchNow('ipc-master-original-choice', 'loop', true);
+    await writeDurableNow(goal.GOAL_REPLIES_STATE, replySnapshot);
+    goal.restoreGoalReplies(replySnapshot);
+
+    rename = vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      const target = path.basename(String(to));
+      if (switchFirst && target === `${goal.GOAL_SWITCHES_STATE}.json`) {
+        switchFirst = false;
+        await switchGate.hold();
+      }
+      if (replyFirst && target === `${goal.GOAL_REPLIES_STATE}.json`) {
+        replyFirst = false;
+        await failedReplyGate.hold();
+        throw new Error('Rejected Goal replies rename');
+      }
+      return originalRename(from, to);
+    });
+
+    let settled = false;
+    const base = getConfig();
+    pending = save({ ...base, goal: { ...base.goal, enabled: false } }, base)
+      .then(value => { settled = true; return value; });
+    await Promise.all([switchGate.entered, failedReplyGate.entered]);
+    switchGate.release();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(settled, 'Settings cannot report Off while reply tombstones are not durable').toBe(false);
+    failedReplyGate.release();
+    expect((await pending).ok).toBe(false);
+    const failedSnapshot = await readDurable<Parameters<typeof goal.restoreGoalReplies>[0]>(goal.GOAL_REPLIES_STATE);
+    expect(failedSnapshot?.replies).toContainEqual(expect.objectContaining({ replyId: 'assistant-ipc-reply', state: 'pending' }));
+    expect(goal.goalPendingReplyFor('ipc-master-reply')).toBeNull();
+
+    rename.mockRestore();
+    await goal.setGoalSwitchNow('ipc-later-chat-choice', 'goal', true);
+    let retrySettled = false;
+    rename = vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (path.basename(String(to)) === `${goal.GOAL_REPLIES_STATE}.json`) await retryReplyGate.hold();
+      return originalRename(from, to);
+    });
+    const retryBase = getConfig();
+    pending = save(retryBase, retryBase).then(value => { retrySettled = true; return value; });
+    await retryReplyGate.entered;
+    expect(retrySettled, 'an already-Off retry must flush the earlier failed tombstone').toBe(false);
+    retryReplyGate.release();
+    await expect(pending).resolves.toBeTruthy();
+
+    const savedReplies = await readDurable<Parameters<typeof goal.restoreGoalReplies>[0]>(goal.GOAL_REPLIES_STATE);
+    expect(savedReplies?.replies).toContainEqual(expect.objectContaining({ replyId: 'assistant-ipc-reply', state: 'handled' }));
+    const savedSwitches = await readDurable<Parameters<typeof goal.restoreGoalSwitches>[0]>(goal.GOAL_SWITCHES_STATE);
+    expect(savedSwitches?.switches).toContainEqual(expect.objectContaining({ conversationId: 'ipc-later-chat-choice', enabled: true }));
+  } finally {
+    for (const gate of gates) gate.release();
+    if (pending) await pending.catch(() => undefined);
+    rename?.mockRestore();
+    goal.restoreGoalSwitches(previousSwitches);
+    goal.restoreGoalReplies(previousReplies);
+    await writeDurableNow(goal.GOAL_SWITCHES_STATE, previousSwitches);
+    await writeDurableNow(goal.GOAL_REPLIES_STATE, previousReplies);
+  }
+});
+
 it('keeps the reported interface language and the extension preferences through a Settings save', async () => {
   // Neither is part of the settings form. The save replaces the whole `ui` object, so both must be
   // carried through, or the extension would lose its language and its kept preferences.

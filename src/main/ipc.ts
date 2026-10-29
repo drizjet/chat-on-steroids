@@ -84,7 +84,7 @@ import { effectiveCapabilities, getConfig, updateConfig, MAX_MCP_INSTRUCTIONS_CH
 import { UI_LANGUAGES } from '../shared/ui-language.js';
 import { PROJECT_COLORS } from '../shared/projects.js';
 import { bridgePortSelection } from './bridge-ports.js';
-import { clearAllGoalSwitchesNow, persistGoalSwitchesNow, draftTaskPlan, listGoalModels, MODEL_PAGE_SIZE, retireGoalDrafts, goalBackendFor, goalSwitchFor, setGoalSwitchNow, setGoalReplyActiveNow, setGoalObjectiveNow } from './goal.js';
+import { clearAllGoalSwitchesNow, persistGoalSwitchesNow, persistGoalRepliesNow, draftTaskPlan, listGoalModels, MODEL_PAGE_SIZE, retireGoalDrafts, goalBackendFor, goalSwitchFor, setGoalSwitchNow, setGoalReplyActiveNow, setGoalObjectiveNow } from './goal.js';
 import { forgetExposedSurface } from './mcp/server.js';
 import { runningToolActivity } from './mcp/call-context.js';
 import { onBackgroundExecChange, runningExecProcesses, stopExecProcess } from './codex/ownership.js';
@@ -845,8 +845,12 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
     if (!next.goal.enabled) {
       // A failed Off save has already changed config. Its retry must still wait
       // for disk while preserving any later explicit per-chat decisions.
-      try { await (before.goal.enabled ? clearAllGoalSwitchesNow() : persistGoalSwitchesNow()); }
-      catch (error) { goalStopPersistError = error; }
+      const barriers = await Promise.allSettled([
+        before.goal.enabled ? clearAllGoalSwitchesNow() : persistGoalSwitchesNow(),
+        persistGoalRepliesNow()
+      ]);
+      const failedBarrier = barriers.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+      if (failedBarrier) goalStopPersistError = failedBarrier.reason;
     }
     // Explicit settings changes replace discovery's monotonic snapshot. Otherwise
     // disabled permissions/finish/session tools remain published and no schema change

@@ -42,6 +42,7 @@
  * into somebody's conversation.
  */
 
+import { createHash } from 'node:crypto';
 import { requestBrowserDecision, authorizeBrowserHelperRetry } from './session/input.js';
 import { goalErrorKey, goalErrorMessage } from '../shared/goal-errors.js';
 import { userPromptText } from '../shared/user-prompt.js';
@@ -438,6 +439,7 @@ interface GoalReplyObligation {
 }
 
 const goalReplies = new Map<string, GoalReplyObligation>();
+let goalReplyAcceptanceGeneration = 0;
 
 /**
  * How long one reply may wait for its Goal decision, and how many chats may be waiting.
@@ -531,6 +533,11 @@ export function restoreGoalReplies(snapshot: GoalRepliesSnapshot | null): void {
 
 function persistGoalRepliesSoon(): void {
   writeDurableSoon(GOAL_REPLIES_STATE, snapshotGoalReplies());
+}
+
+/** Settings Off acknowledges only after the current handled-reply projection reaches disk. */
+export function persistGoalRepliesNow(): Promise<void> {
+  return writeDurableNow(GOAL_REPLIES_STATE, snapshotGoalReplies());
 }
 
 /**
@@ -671,6 +678,10 @@ export async function acceptGoalReplyNow(input: {
   handledOnly?: true;
   current?: () => boolean;
 }): Promise<void> {
+  const acceptanceGeneration = goalReplyAcceptanceGeneration;
+  const acceptanceSwitchRow = goalSwitches.get(input.conversationId);
+  const acceptanceSwitch = goalSwitchFor(input.conversationId);
+  const recording = getConfig().sessions.record;
   if (!input.handledOnly && await astraFinishOnly(input.sessionId, input.conversationId)) return;
   if (input.silenceSourceTurnId &&
       !await turnHasMcpCall(input.sessionId, input.conversationId, input.silenceSourceTurnId)) return;
@@ -684,14 +695,23 @@ export async function acceptGoalReplyNow(input: {
   );
   const before = current ? { ...current } : null;
   const bounded = snapshotGoalReplies().replies;
-  const active =
+  const eligible =
     !input.handledOnly && !input.blocked &&
-    getConfig().sessions.record &&
+    recording &&
     goalArmedFor(input.conversationId) &&
-    await goalKeyPresent(goalSwitchFor(input.conversationId).mode) &&
-    (goalSwitchFor(input.conversationId).mode !== 'loop' ||
+    await goalKeyPresent(acceptanceSwitch.mode) &&
+    (acceptanceSwitch.mode !== 'loop' ||
       await automaticLoopHasMcpWork(input.sessionId, input.conversationId, input.silenceSourceTurnId ?? input.turnId));
   if (input.current && !input.current()) return;
+  const latest = goalReplies.get(input.conversationId);
+  if (latest?.replyId === input.replyId || (latest && latest.eventSeq > input.eventSeq) ||
+      (current && latest !== current) || (!current && latest)) return;
+  const currentSwitch = goalSwitchFor(input.conversationId);
+  const active = eligible && goalReplyAcceptanceGeneration === acceptanceGeneration &&
+    goalSwitches.get(input.conversationId) === acceptanceSwitchRow &&
+    getConfig().sessions.record === recording && currentSwitch.enabled === acceptanceSwitch.enabled &&
+    currentSwitch.mode === acceptanceSwitch.mode && currentSwitch.own === acceptanceSwitch.own &&
+    currentSwitch.afterTurn === acceptanceSwitch.afterTurn;
   goalReplies.set(input.conversationId, {
     conversationId: input.conversationId,
     sessionId: input.sessionId,
@@ -1377,6 +1397,7 @@ export async function ackGoalDraftNow(
  * Only an explicit master Off also discharges all automatic reply obligations.
  */
 export function retireGoalDrafts(retireReplies = false): number {
+  if (retireReplies) goalReplyAcceptanceGeneration += 1;
   let retired = 0;
   for (const draft of drafts.values()) {
     if (draft.acknowledged) continue;
@@ -1559,6 +1580,7 @@ export function resetGoalStateForTests(): void {
   pendingGoalSwitches.clear();
   drafts.clear();
   goalReplies.clear();
+  goalReplyAcceptanceGeneration = 0;
   goalObjectives.clear();
   goalSwitches.clear();
   goalSwitchWrites = Promise.resolve();
@@ -2214,28 +2236,26 @@ export async function draftOpeningMessage(
   }
 }
 
-/** The failure in words the page can put on screen, without leaking the key back out. */
+function bodyFingerprint(label: 'provider' | 'model', text: string): string {
+  const bytes = Buffer.byteLength(text, 'utf8');
+  const fingerprint = createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 16);
+  return `${label} body ${bytes} bytes sha256:${fingerprint}`;
+}
+
+/** The status and a content-free body fingerprint keep useful diagnostics without provider prose. */
 async function httpFailure(response: Response): Promise<string> {
-  let detail = '';
+  let body = 'provider body unreadable';
   try {
     const raw = await boundedResponseText(response, MAX_ERROR_BODY_BYTES);
-    const parsed: unknown = raw ? JSON.parse(raw) : null;
-    const message =
-      parsed && typeof parsed === 'object' && 'error' in parsed
-        ? (parsed as { error?: { message?: unknown } }).error?.message
-        : null;
-    detail = typeof message === 'string' ? message.slice(0, 200) : raw.slice(0, 200);
+    body = bodyFingerprint('provider', raw);
   } catch (error) {
-    // A body that is neither JSON nor readable adds nothing the status code does not say.
-    // Oversize is worth naming because it explains why otherwise useful provider prose was
-    // intentionally not read.
-    if (error instanceof Error && error.message === 'response_body_too_large') detail = 'response body too large';
+    if (error instanceof Error && error.message === 'response_body_too_large') body = 'provider body too large';
   }
-  if (response.status === 401 || response.status === 403) return `auth_rejected: ${detail || 'the OpenRouter key was refused'}`;
-  if (response.status === 402) return `out_of_credit: ${detail || 'the OpenRouter account is out of credit'}`;
-  if (response.status === 404) return `unknown_model: ${detail || 'OpenRouter does not know that model id'}`;
-  if (response.status === 429) return `rate_limited: ${detail || 'OpenRouter is rate-limiting this key'}`;
-  return `http_${response.status}${detail ? `: ${detail}` : ''}`;
+  const category = response.status === 401 || response.status === 403 ? 'auth_rejected'
+    : response.status === 402 ? 'out_of_credit'
+      : response.status === 404 ? 'unknown_model'
+        : response.status === 429 ? 'rate_limited' : `http_${response.status}`;
+  return `${category}: HTTP ${response.status}; ${body}`;
 }
 
 /**
@@ -2358,12 +2378,6 @@ function decisionObjectIn(text: string): unknown {
   return parse(body.slice(open, close + 1));
 }
 
-/** The head of an unreadable reply, flattened, for the log line that says it was unreadable. */
-function sample(text: string): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length > 200 ? `${flat.slice(0, 200)}…` : flat;
-}
-
 /**
  * Converts untrusted model output into the only two states the browser may act on.
  *
@@ -2391,7 +2405,7 @@ function normalizeGoalDecision(raw: string, legacy: boolean): GoalDecision {
 
   const decision = decisionObjectIn(trimmed);
   if (decision === undefined) {
-    logWarn(`goal: the structured decision was not JSON — ${sample(trimmed)}`);
+    logWarn(`goal: the structured decision was not JSON — ${bodyFingerprint('model', trimmed)}`);
     return { action: 'invalid', error: 'invalid_goal_decision_json' };
   }
   if (!decision || typeof decision !== 'object' || Array.isArray(decision)) {

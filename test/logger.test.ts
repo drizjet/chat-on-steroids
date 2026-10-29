@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  flushLogBeforeExit, flushLogFile, getLog, initLogFile, logInfo,
+  flushLogBeforeExit, flushLogFile, getLog, initLogFile, logInfo, redact,
   onLog, resetLoggerForTests, snapshotLogOnCrash
 } from '../src/main/logger.js';
 import { runShutdownSequence } from '../src/main/shutdown.js';
@@ -85,6 +85,12 @@ describe('bounded asynchronous diagnostic mirror', () => {
       expect(text).not.toContain('secret123456789');
       expect(text).toContain('sk-***');
     }
+  });
+
+  it('redacts short generic Bearer credentials', () => {
+    const message = redact('Authorization: Bearer short-local-token');
+    expect(message).toBe('Authorization: Bearer ***');
+    expect(message).not.toContain('short-local-token');
   });
 
   it('isolates file errors, saves forensic context, and keeps writing once the disk recovers (#1682)', async () => {
