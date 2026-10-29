@@ -16846,7 +16846,7 @@ describe('the goal loop over the bridge', () => {
       const opened = await request('POST', '/goal/open', { body: { text: 'rewrite the parser in rust' } });
       expect(opened.status).toBe(502);
       expect(opened.body).toEqual({
-        error: 'rate_limited: Provider returned error',
+        error: expect.stringMatching(/^rate_limited: HTTP 429; provider body \d+ bytes sha256:[a-f0-9]{16}$/),
         message: 'The continuation provider is rate-limiting requests. Wait for the displayed retry, or choose another continuation model.',
         messageKey: 'rate_limited',
         retryable: true
