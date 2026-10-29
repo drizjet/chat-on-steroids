@@ -88,7 +88,7 @@ initLayoutPreviews();
 ui($('followUpHint'), 'textContent', () => t('What a message you send while ChatGPT works does by default. {0} sends it the other way.', [primaryShiftShortcut(t('Enter'))]));
 ui($('enterSendsHint'), 'textContent', () => t('Which key sends what you type. With {0}, Enter starts a new line.', [primaryShortcut(t('Enter'))]));
 ui($('mcpInstructionsLabel'), 'textContent', () => t('Standing instructions for Core and Desktop'));
-ui($('mcpInstructionsHint'), 'textContent', () => t('Added to both connector instructions. Worker model or reasoning preferences are used only when available in this account.'));
+ui($('mcpInstructionsHint'), 'textContent', () => t('Added to Core and Desktop instructions. Worker preferences apply only to choices available in this account.'));
 ui($('enterSendsModifier'), 'textContent', () => primaryShortcut(t('Enter')));
 let pluginRefreshResetBusy = false;
 let pluginRefreshResetFailed = false;

@@ -3401,5 +3401,5 @@
   "Chat On Steroids {0} is held for compatibility review. Prepare and verify a compatible coordinator build before activation.": "Chat On Steroids {0} は互換性レビュー待ちです。アップデートを有効にする前に、互換性のあるコーディネーター ビルドを準備して検証してください。",
   "Held for compatibility review": "互換性レビュー待ち",
   "Standing instructions for Core and Desktop": "Core と Desktop の常設指示",
-  "Added to both connector instructions. Worker model or reasoning preferences are used only when available in this account.": "両方のコネクタの指示に追加されます。Worker のモデルや推論の設定は、このアカウントで利用できる場合にのみ使用されます。"
+  "Added to Core and Desktop instructions. Worker preferences apply only to choices available in this account.": "Core と Desktop の指示に追加されます。Worker の設定は、このアカウントで利用できる選択肢にのみ適用されます。"
 }

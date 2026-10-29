@@ -3401,5 +3401,5 @@
   "Chat On Steroids {0} is held for compatibility review. Prepare and verify a compatible coordinator build before activation.": "Chat On Steroids {0}은(는) 호환성 검토를 위해 보류되었습니다. 업데이트를 활성화하기 전에 호환되는 코디네이터 빌드를 준비하고 검증하세요.",
   "Held for compatibility review": "호환성 검토 대기 중",
   "Standing instructions for Core and Desktop": "Core 및 Desktop의 상시 지침",
-  "Added to both connector instructions. Worker model or reasoning preferences are used only when available in this account.": "두 커넥터의 지침에 추가됩니다. 이 계정에서 사용할 수 있는 경우에만 worker 모델 또는 추론 설정을 사용합니다."
+  "Added to Core and Desktop instructions. Worker preferences apply only to choices available in this account.": "Core와 Desktop 지침에 추가됩니다. Worker 설정은 이 계정에서 사용할 수 있는 선택 항목에만 적용됩니다."
 }

@@ -3581,7 +3581,7 @@ it('loads, preserves and saves standing Core and Desktop connector instructions'
   expect(field.maxLength).toBe(4000);
   expect(doc.querySelector('label[for="mcpInstructions"]')).not.toBeNull();
   expect(field.getAttribute('aria-describedby')).toBe('mcpInstructionsHint');
-  expect(doc.getElementById('mcpInstructionsHint')?.textContent).toContain('Added to both connector instructions.');
+  expect(doc.getElementById('mcpInstructionsHint')?.textContent).toContain('Added to Core and Desktop instructions.');
 
   const developerMode = doc.getElementById('developerMode') as HTMLInputElement;
   developerMode.checked = true;

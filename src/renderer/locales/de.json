@@ -3464,9 +3464,9 @@
   "Your own chat style": "Dein eigener Chat-Stil",
   "Rewrite how ChatGPT talks and writes in new chats.": "Lege fest, wie ChatGPT in neuen Chats spricht und schreibt.",
   "A compatible coordinator build needs review before this update can be activated.": "Vor der Aktivierung dieses Updates muss ein kompatibler Coordinator-Build geprüft werden.",
-  "Prepare and verify a compatible coordinator build before activation.": "Bereiten Sie einen kompatiblen Coordinator-Build vor und verifizieren Sie ihn vor der Aktivierung.",
-  "Chat On Steroids {0} is held for compatibility review. Prepare and verify a compatible coordinator build before activation.": "Chat On Steroids {0} wird bis zur Kompatibilitätsprüfung zurückgehalten. Bereiten und prüfen Sie einen kompatiblen Coordinator-Build vor der Aktivierung.",
+  "Prepare and verify a compatible coordinator build before activation.": "Bereite einen kompatiblen Coordinator-Build vor und prüfe ihn vor der Aktivierung.",
+  "Chat On Steroids {0} is held for compatibility review. Prepare and verify a compatible coordinator build before activation.": "Chat On Steroids {0} wird bis zur Kompatibilitätsprüfung zurückgehalten. Bereite und prüfe einen kompatiblen Coordinator-Build vor der Aktivierung.",
   "Held for compatibility review": "Zurückgehalten bis zur Kompatibilitätsprüfung",
   "Standing instructions for Core and Desktop": "Dauerhafte Anweisungen für Core und Desktop",
-  "Added to both connector instructions. Worker model or reasoning preferences are used only when available in this account.": "Wird den Anweisungen beider Connectoren hinzugefügt. Worker-Modell- oder Reasoning-Präferenzen werden nur verwendet, wenn dieses Konto sie unterstützt."
+  "Added to Core and Desktop instructions. Worker preferences apply only to choices available in this account.": "Wird den Anweisungen von Core und Desktop hinzugefügt. Worker-Präferenzen gelten nur für Optionen, die dieses Konto anbietet."
 }

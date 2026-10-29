@@ -3535,5 +3535,5 @@
   "Chat On Steroids {0} is held for compatibility review. Prepare and verify a compatible coordinator build before activation.": "Chat On Steroids {0} está en espera de una revisión de compatibilidad. Prepara y verifica una compilación compatible del coordinador antes de activarla.",
   "Held for compatibility review": "En espera de revisión de compatibilidad",
   "Standing instructions for Core and Desktop": "Instrucciones permanentes para Core y Desktop",
-  "Added to both connector instructions. Worker model or reasoning preferences are used only when available in this account.": "Se añaden a las instrucciones de ambos conectores. Las preferencias de modelo o razonamiento de los workers solo se usan si esta cuenta las admite."
+  "Added to Core and Desktop instructions. Worker preferences apply only to choices available in this account.": "Se añade a las instrucciones de Core y Desktop. Las preferencias de los workers solo se aplican a las opciones disponibles en esta cuenta."
 }

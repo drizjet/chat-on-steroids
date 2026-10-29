@@ -3401,5 +3401,5 @@
   "Chat On Steroids {0} is held for compatibility review. Prepare and verify a compatible coordinator build before activation.": "Chat On Steroids {0} 已暫停，等待相容性審查。啟用更新前，請準備並驗證相容的協調器組建版本。",
   "Held for compatibility review": "等待相容性審查",
   "Standing instructions for Core and Desktop": "Core 和 Desktop 的常駐指示",
-  "Added to both connector instructions. Worker model or reasoning preferences are used only when available in this account.": "這些內容會加入兩個連接器的指示中。只有此帳戶支援時，才會使用 worker 模型或推理偏好。"
+  "Added to Core and Desktop instructions. Worker preferences apply only to choices available in this account.": "這些內容會加入 Core 和 Desktop 的指示中。Worker 偏好僅適用於此帳戶可用的選項。"
 }
