@@ -788,10 +788,12 @@ describe('the reply', () => {
 
   it('fails a partial completion when the provider emits a streamed error', async () => {
     const sessionId = await seed('c-stream-error');
+    const logger = await import('../src/main/logger.js');
+    const firstEntry = logger.getLog().length;
     globalThis.fetch = (async () =>
       stream([
         delta('this is only a partial instruction'),
-        `data: ${JSON.stringify({ error: { message: 'upstream provider failed' } })}\n`,
+        `data: ${JSON.stringify({ error: { message: 'PRIVATE_STREAM_CANARY provider-only-detail' } })}\n`,
         'data: [DONE]\n'
       ])) as never;
 
@@ -800,6 +802,10 @@ describe('the reply', () => {
     expect(view.stage).toBe('failed');
     expect(view.reply).toBe('');
     expect(view.error).toMatch(/stream|provider|request_failed/i);
+    expect(view.error).toContain('sha256:');
+    const diagnostic = logger.getLog().slice(firstEntry).map(entry => entry.message).join('\n');
+    expect(view.error).not.toContain('PRIVATE_STREAM_CANARY');
+    expect(diagnostic).not.toContain('PRIVATE_STREAM_CANARY');
   });
 
   /**

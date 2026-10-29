@@ -243,6 +243,48 @@ it('does not publish an automatic Loop reply after master Off wins an awaited MC
   lookup.mockRestore();
 });
 
+it('does not restore a stale reply snapshot after master Off wins a delayed acceptance write', async () => {
+  const session = await createSession({ title: 'reply rollback race', conversationId: SOURCE });
+  const config = (await import('../src/main/config.js')).getConfig();
+  await saveConfig({ ...config, goal: { ...config.goal, enabled: true, mode: 'goal', backend: 'templates' } });
+  await goal.acceptGoalReplyNow({
+    conversationId: SOURCE, sessionId: session.id, replyId: 'assistant-old',
+    turnId: 'reply-old', eventSeq: 1, blocked: false
+  });
+  expect(goal.goalPendingReplyFor(SOURCE)?.replyId).toBe('assistant-old');
+  await flushDurable();
+
+  const gate = delayedWrite(goal.GOAL_REPLIES_STATE, true);
+  const accepting = observe(goal.acceptGoalReplyNow({
+    conversationId: SOURCE, sessionId: session.id, replyId: 'assistant-new',
+    turnId: 'reply-new', eventSeq: 2, blocked: false
+  }));
+  await gate.entered;
+  expect(goal.goalPendingReplyFor(SOURCE)?.replyId).toBe('assistant-new');
+
+  const current = (await import('../src/main/config.js')).getConfig();
+  await saveConfig({ ...current, goal: { ...current.goal, enabled: false } });
+  goal.retireGoalDrafts(true);
+  const offBarrier = observe(goal.persistGoalRepliesNow());
+
+  gate.release();
+  expect((await accepting).error).toBeInstanceOf(Error);
+  expect((await offBarrier).error).toBeUndefined();
+  await flushDurable();
+
+  expect(goal.goalPendingReplyFor(SOURCE)).toBeNull();
+  expect(goal.snapshotGoalReplies().replies).toContainEqual(
+    expect.objectContaining({ conversationId: SOURCE, replyId: 'assistant-new', state: 'handled' })
+  );
+  const saved = await readDurable<Parameters<typeof goal.restoreGoalReplies>[0]>(goal.GOAL_REPLIES_STATE);
+  expect(saved?.replies).toContainEqual(
+    expect.objectContaining({ conversationId: SOURCE, replyId: 'assistant-new', state: 'handled' })
+  );
+  expect(saved?.replies).not.toContainEqual(
+    expect.objectContaining({ conversationId: SOURCE, replyId: 'assistant-old', state: 'pending' })
+  );
+});
+
 it('preserves a newer explicit Off after an earlier write rejects', async () => {
   await goal.setGoalSwitchNow(SOURCE, 'loop', true, true);
   const gate = delayedWrite(goal.GOAL_SWITCHES_STATE, true);

@@ -3284,7 +3284,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
             sessionId: result.sessionId!,
             ...candidate,
             blocked: superseded || goalFencedChat(id),
-            current: () => !superseded && !goalFencedChat(id)
+            current: () => !supersededSourceConversations().includes(id) && !goalFencedChat(id)
           });
         }
       } catch (err) {
@@ -4444,7 +4444,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         turnId,
         eventSeq: 0,
         blocked: false,
-        current: () => !goalFencedChat(id)
+        current: () => !supersededSourceConversations().includes(id) && !goalFencedChat(id)
       });
     } catch (err) {
       discardPreparedGoalDraft(id, draft.token);
@@ -4477,6 +4477,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (pendingAfterAuthority?.turnId !== turnId) {
       discardPreparedGoalDraft(id, draft.token);
       return goalJson(res, 409, { error: 'goal_reply_not_pending', retryable: false }, origin);
+    }
+    if (supersededSourceConversations().includes(id)) {
+      discardPreparedGoalDraft(id, draft.token);
+      return goalJson(res, 409, { error: 'conversation_superseded' }, origin);
     }
     beginGoalDraft(id, draft.token);
     return goalJson(res, 200, { goal: draft, sessionId }, origin);

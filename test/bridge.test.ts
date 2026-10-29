@@ -14950,6 +14950,108 @@ describe('the goal loop over the bridge', () => {
     }
   });
 
+  it('does not accept a Goal reply after Compact & Resume supersedes its source during acceptance', async () => {
+    await pair();
+    const from = 'cafe0191-0000-4000-8000-000000000191';
+    const to = 'cafe0192-0000-4000-8000-000000000192';
+    const opened = await request('POST', '/events', { body: { conversationId: from, events: [
+      { kind: 'user_message', time: Date.now(), text: 'finish the remaining work', messageId: 'supersede-user' },
+      { kind: 'turn_start', time: Date.now(), turnId: 'supersede-turn' },
+      { kind: 'turn_end', time: Date.now(), turnId: 'supersede-turn', outcome: 'completed' }
+    ] } });
+    const sessionId = opened.body.sessionId as string;
+    const continuation = await openContinuationNow(sessionId, from);
+    expect(await attachSummary(continuation.token, SAMPLE_BRIEF)).not.toBeNull();
+    expect(await claimContinuationNow(continuation.token, 'goal-reply-supersession-test')).not.toBeNull();
+
+    const goalModule = await import('../src/main/goal.js');
+    const accept = goalModule.acceptGoalReplyNow.bind(goalModule);
+    const gate = faultGate();
+    let currentAfterCommit: boolean | undefined;
+    const acceptance = vi.spyOn(goalModule, 'acceptGoalReplyNow').mockImplementation(async input => {
+      await gate.hold();
+      currentAfterCommit = input.current?.() ?? true;
+      await accept(input);
+    });
+    try {
+      const finalization = request('POST', '/events', { body: { conversationId: from, events: [
+        { kind: 'assistant_message', time: Date.now(), turnId: 'supersede-turn', messageId: 'supersede-final',
+          text: 'The first pass is complete.', state: 'final', final: true, goalEligible: true, activeNow: true }
+      ] } });
+      const started = await Promise.race([
+        gate.entered.then(() => ({ kind: 'acceptance-entered' })),
+        finalization.then(reply => ({ kind: 'request-finished', status: reply.status, body: reply.body,
+          pending: goalPendingReplyFor(from) }))
+      ]);
+      expect(started.kind, JSON.stringify(started)).toBe('acceptance-entered');
+      expect(await commitContinuation(continuation.token, to)).toBe(true);
+      gate.release();
+      expect((await finalization).status).toBe(200);
+      expect(currentAfterCommit).toBe(false);
+      expect(goalPendingReplyFor(from)).toBeNull();
+      expect((await readDurable<{ replies: Array<{ conversationId: string }> }>(GOAL_REPLIES_STATE))?.replies ?? [])
+        .not.toContainEqual(expect.objectContaining({ conversationId: from }));
+    } finally {
+      gate.release();
+      acceptance.mockRestore();
+    }
+  });
+
+  it('rechecks a Goal draft owner immediately before starting provider work', async () => {
+    await pair();
+    const from = 'cafe0193-0000-4000-8000-000000000193';
+    const to = 'cafe0194-0000-4000-8000-000000000194';
+    const opened = await request('POST', '/events', { body: { conversationId: from, events: [
+      { kind: 'user_message', time: Date.now(), text: 'continue the remaining work', messageId: 'draft-owner-user' },
+      { kind: 'turn_start', time: Date.now(), turnId: 'draft-owner-turn' },
+      { kind: 'turn_end', time: Date.now(), turnId: 'draft-owner-turn', outcome: 'completed' },
+      { kind: 'assistant_message', time: Date.now(), turnId: 'draft-owner-turn', messageId: 'draft-owner-final',
+        text: 'The requested pass is complete.', state: 'final', final: true, goalEligible: true, activeNow: true }
+    ] } });
+    const sessionId = opened.body.sessionId as string;
+    const continuation = await openContinuationNow(sessionId, from);
+    expect(await attachSummary(continuation.token, SAMPLE_BRIEF)).not.toBeNull();
+    expect(await claimContinuationNow(continuation.token, 'goal-draft-owner-test')).not.toBeNull();
+
+    const goalModule = await import('../src/main/goal.js');
+    const gate = faultGate();
+    const holdAuthority = vi.spyOn(goalModule, 'loopReplyHasAuthority').mockImplementation(async () => {
+      await gate.hold();
+      return true;
+    });
+    // Preserve the staged row so this fixture reaches the final send boundary. Production
+    // retirement still runs in every real handoff; the dedicated owner check must hold even
+    // if a later projection changes independently.
+    const preserveReply = vi.spyOn(goalModule, 'retireGoalDraftsFor').mockReturnValue(false);
+    const originalFetch = globalThis.fetch;
+    let providerCalls = 0;
+    globalThis.fetch = (async () => {
+      providerCalls++;
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ action: 'continue', reply: 'stale work' }) } }] });
+    }) as typeof globalThis.fetch;
+    try {
+      const drafting = request('POST', '/goal/draft', { body: { conversationId: from, turnId: 'draft-owner-turn' } });
+      const started = await Promise.race([
+        gate.entered.then(() => ({ kind: 'authority-entered' })),
+        drafting.then(result => ({ kind: 'request-finished', status: result.status, body: result.body }))
+      ]);
+      expect(started.kind, JSON.stringify(started)).toBe('authority-entered');
+      expect(goalPendingReplyFor(from)).toMatchObject({ turnId: 'draft-owner-turn' });
+      expect(await commitContinuation(continuation.token, to)).toBe(true);
+      gate.release();
+      const result = await drafting;
+      expect(result.status).toBe(409);
+      expect(result.body.error).toBe('conversation_superseded');
+      await new Promise<void>(resolve => setTimeout(resolve, 25));
+      expect(providerCalls).toBe(0);
+    } finally {
+      gate.release();
+      globalThis.fetch = originalFetch;
+      holdAuthority.mockRestore();
+      preserveReply.mockRestore();
+    }
+  });
+
   it('repairs Goal onto the exact pre-fix resume-shadow chat and can draft there', async () => {
     await pair();
     const from = 'cafe0031-0000-4000-8000-000000000031';

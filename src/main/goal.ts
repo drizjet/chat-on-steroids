@@ -695,7 +695,6 @@ export async function acceptGoalReplyNow(input: {
       current.replyId === `turn:${input.turnId}`.slice(0, 200)
   );
   const before = current ? { ...current } : null;
-  const bounded = snapshotGoalReplies().replies;
   const eligible =
     !input.handledOnly && !input.blocked &&
     recording &&
@@ -713,7 +712,7 @@ export async function acceptGoalReplyNow(input: {
     getConfig().sessions.record === recording && currentSwitch.enabled === acceptanceSwitch.enabled &&
     currentSwitch.mode === acceptanceSwitch.mode && currentSwitch.own === acceptanceSwitch.own &&
     currentSwitch.afterTurn === acceptanceSwitch.afterTurn;
-  goalReplies.set(input.conversationId, {
+  const accepted: GoalReplyObligation = {
     conversationId: input.conversationId,
     sessionId: input.sessionId,
     replyId: input.replyId.slice(0, 200),
@@ -730,18 +729,21 @@ export async function acceptGoalReplyNow(input: {
     // policy or reopen a decision the page already acknowledged in the meantime.
     acceptedAt: provisionalUpgrade ? current!.acceptedAt : Date.now(),
     state: provisionalUpgrade ? current!.state : active ? 'pending' : 'handled'
-  });
+  };
+  const acceptedSnapshot = JSON.stringify(accepted);
+  goalReplies.set(input.conversationId, accepted);
   try {
     await writeDurableNow(GOAL_REPLIES_STATE, snapshotGoalReplies());
   } catch (error) {
-    // The rejected write is one whole revision, so the rollback is too: the row this accept
-    // added and the expired rows it pruned go back together, leaving the ledger exactly as the
-    // decision found it.
-    goalReplies.clear();
-    for (const reply of bounded) goalReplies.set(reply.conversationId, reply);
-    if (before) goalReplies.set(input.conversationId, before);
-    else goalReplies.delete(input.conversationId);
-    persistGoalRepliesSoon();
+    // Roll back only this staged row, and only while this acceptance still owns it. Off,
+    // a later ACK, or a newer same-chat choice may have changed it while the rename waited.
+    const latest = goalReplies.get(input.conversationId);
+    if (goalReplyAcceptanceGeneration === acceptanceGeneration && latest === accepted &&
+        JSON.stringify(latest) === acceptedSnapshot) {
+      if (before) goalReplies.set(input.conversationId, before);
+      else goalReplies.delete(input.conversationId);
+      persistGoalRepliesSoon();
+    }
     throw error;
   }
 }
@@ -2558,10 +2560,9 @@ async function readStream(
             : rawError && typeof rawError === 'object' && 'message' in rawError
               ? (rawError as { message?: unknown }).message
               : null;
-        const detail =
-          typeof rawMessage === 'string'
-            ? rawMessage.replace(/[\r\n\t]+/g, ' ').trim().slice(0, 200)
-            : '';
+        const errorText = typeof rawError === 'string' ? rawError :
+          typeof rawMessage === 'string' ? rawMessage : null;
+        const detail = errorText ? bodyFingerprint('provider', errorText) : '';
         // OpenRouter can surface an upstream failure *inside* an already-200 SSE response,
         // including after some deltas were emitted. Ignoring that event turns a truncated
         // completion into a ready Goal message and types a sentence the model never finished.
