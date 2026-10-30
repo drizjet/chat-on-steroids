@@ -574,6 +574,9 @@ describe('Goal decision backends', () => {
     random.mockRestore();
     expect(draft.stage).toBe('ready');
     expect(draft.reply.endsWith(GOAL_MARKER_INSTRUCTION)).toBe(true);
+    expect(GOAL_MARKER_INSTRUCTION).toContain('[[GOAL:COMPLETE]]');
+    expect(GOAL_MARKER_INSTRUCTION).toContain('[[GOAL:CONTINUE]]');
+    expect(GOAL_MARKER_INSTRUCTION).not.toContain('COS_GOAL');
     expect(fetch).not.toHaveBeenCalled();
     expect(browser.request).not.toHaveBeenCalled();
   });
@@ -597,11 +600,14 @@ describe('Goal decision backends', () => {
     for (const text of ['prefix [[COS_GOAL:COMPLETE]]', '[[COS_GOAL:COMPLETE]]\nMore work', '[[COS_GOAL:complete]]']) {
       expect(templateGoalDecision(text, 0).action).toBe('invalid');
     }
+    expect(templateGoalDecision('Finished\n[[GOAL:COMPLETE]]', 0)).toEqual({ action: 'stop' });
+    expect(templateGoalDecision('More remains\n[[GOAL:CONTINUE]]', 0).action).toBe('continue');
+    expect(templateGoalDecision('Finished\n[[GOAL:complete]]', 0).action).toBe('invalid');
   });
   it('keeps the tool-call note builder and the marker check apart: the note text alone is not set aside (#1894, CodeRabbit)', () => {
     // A model can write that text itself; only the app knows when it added the note.
     expect(templateGoalDecision(`All done.\n[[COS_GOAL:COMPLETE]]\n\n${toolCallFootnote(1, 0)}`, 0).action).toBe('invalid');
-    expect(toolCallFootnote(2, 0)).toBe('[Chat On Steroids: 2 tool calls ran in this turn. Arguments and results are not shown.]');
+    expect(toolCallFootnote(2, 0)).toBe('[Tool activity: 2 tool calls ran in this turn. Arguments and results are not shown.]');
   });
   it('uses browser JSON decisions without an API key and refuses prose', async () => {
     await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, backend: 'chatgpt' } });

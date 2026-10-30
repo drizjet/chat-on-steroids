@@ -1,5 +1,7 @@
 /** Offline Goal protocol. Only an exact last line is actionable; missing markers pause. */
-export const GOAL_MARKER_INSTRUCTION = '\n\nFor this Goal session only: at the end of each final reply, write exactly one separate last line: [[COS_GOAL:COMPLETE]] if the entire requested task is finished, or [[COS_GOAL:CONTINUE]] if requested work remains. Do not claim completion for partial work. If user input is required, explain it and omit both markers.';
+export const GOAL_MARKER_INSTRUCTION = '\n\nFor this Goal session only: at the end of each final reply, write exactly one separate last line: [[GOAL:COMPLETE]] if the entire requested task is finished, or [[GOAL:CONTINUE]] if requested work remains. Do not claim completion for partial work. If user input is required, explain it and omit both markers.';
+const GOAL_COMPLETE_MARKERS = new Set(['[[GOAL:COMPLETE]]', '[[COS_GOAL:COMPLETE]]']);
+const GOAL_CONTINUE_MARKERS = new Set(['[[GOAL:CONTINUE]]', '[[COS_GOAL:CONTINUE]]']);
 export const GOAL_CONTINUATIONS: readonly string[] = [
   "Keep going until the requested work is finished. Stay within what I asked for.",
   "Keep going until the requested work is finished. Use the context already in this conversation.",
@@ -207,13 +209,13 @@ export const GOAL_CONTINUATIONS: readonly string[] = [
  * tool results. The marker check is given the answer without it (goal.ts templateDecisionText, #1894).
  */
 export function toolCallFootnote(count: number, beforeFreshTurn: number): string {
-  const continued = beforeFreshTurn ? `, ${beforeFreshTurn} of them before Chat On Steroids continued it in a fresh turn` : '';
-  return `[Chat On Steroids: ${count} tool call${count === 1 ? '' : 's'} ran in this turn${continued}. Arguments and results are not shown.]`;
+  const continued = beforeFreshTurn ? `, ${beforeFreshTurn} before a fresh turn continued the task` : '';
+  return `[Tool activity: ${count} tool call${count === 1 ? '' : 's'} ran in this turn${continued}. Arguments and results are not shown.]`;
 }
 export function templateGoalDecision(final: string, slot: number, secondSlot = slot + 1): { action: 'stop' } | { action: 'continue'; reply: string } | { action: 'invalid'; error: string } {
   const last = final.trim().split(/\r?\n/).at(-1)?.trim();
-  if (last === '[[COS_GOAL:COMPLETE]]') return { action: 'stop' };
-  if (last !== '[[COS_GOAL:CONTINUE]]') return { action: 'invalid', error: 'goal_marker_missing' };
+  if (GOAL_COMPLETE_MARKERS.has(last ?? '')) return { action: 'stop' };
+  if (!GOAL_CONTINUE_MARKERS.has(last ?? '')) return { action: 'invalid', error: 'goal_marker_missing' };
   const first = Math.abs(Math.trunc(slot)) % GOAL_CONTINUATIONS.length;
   let second = Math.abs(Math.trunc(secondSlot)) % GOAL_CONTINUATIONS.length;
   if (second === first) second = (first + 1) % GOAL_CONTINUATIONS.length;

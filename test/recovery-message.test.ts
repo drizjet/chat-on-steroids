@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { CUSTOM_CONTINUE_MAX_CHARS, recoveryMessage } from '../src/shared/recovery.js';
+import { CUSTOM_CONTINUE_MAX_CHARS, recoveryMessage, rotationMessage } from '../src/shared/recovery.js';
 
 describe('the automatic Continue text', () => {
+  it('keeps the fresh-turn explanation neutral', () => {
+    const text = rotationMessage();
+    expect(text).toContain('Continue the task from where you are.');
+    expect(text).toContain('fresh turn');
+    expect(text).not.toContain('Chat On Steroids');
+  });
+
   it('carries no unrelated aside unless the person switched them on', () => {
     for (let index = 0; index < 50; index++) {
       const text = recoveryMessage();

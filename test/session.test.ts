@@ -2524,6 +2524,8 @@ describe('handoff storage', () => {
 
   it('asks for user-authoritative handoffs up to the documented 30k-token ceiling', () => {
     const prompt = nativeHandoffPrompt();
+    expect(prompt).toContain('This conversation is being compacted');
+    expect(prompt).not.toContain('Chat On Steroids');
     expect(prompt).toContain(DEFAULT_HANDOFF_PROMPT);
     expect(prompt).toMatch(/user's messages as the highest-authority source/i);
     expect(prompt).toMatch(/10,000[–-]30,000 tokens/i);

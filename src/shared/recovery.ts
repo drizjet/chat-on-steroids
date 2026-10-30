@@ -87,5 +87,5 @@ export const recoveryBusyMs = (pro: boolean): number => (pro ? 5 : 1) * 60_000;
  * it is sent into a turn the model is still working in, and only has to carry the work on.
  */
 export function rotationMessage(): string {
-  return 'Continue the task from where you are. (Chat On Steroids starts a fresh turn every so often so long work stays reliable; nothing else changed.)';
+  return 'Continue the task from where you are. (A fresh turn may start periodically so long work stays reliable; nothing else changed.)';
 }

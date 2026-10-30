@@ -97,15 +97,6 @@ export type { GoalModel } from '../shared/goal-reasoning.js';
 /** Where OpenRouter lives. One host, both routes. */
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
 
-/**
- * Sent so a key's owner can see which application spent it, which OpenRouter asks for and
- * uses to attribute traffic. Neither header carries anything about the user or the chat.
- */
-const ATTRIBUTION_HEADERS: Record<string, string> = {
-  'HTTP-Referer': 'https://github.com/chat-on-steroids',
-  'X-Title': 'Chat On Steroids'
-};
-
 /** Which LLM endpoint the Goal/Loop second model runs on, resolved per call from config. */
 export interface GoalEndpoint {
   kind: GoalProviderKind;
@@ -1949,8 +1940,7 @@ async function requestGoalDecision(request: GoalRequest): Promise<GoalDecision |
     redirect: 'error',
     headers: {
       ...(request.key ? { authorization: `Bearer ${request.key}` } : {}),
-      'content-type': 'application/json',
-      ...(custom ? {} : ATTRIBUTION_HEADERS)
+      'content-type': 'application/json'
     },
     body: JSON.stringify(body),
     signal: request.signal
@@ -3218,8 +3208,7 @@ async function allGoalModels(): Promise<GoalModel[]> {
       headers: {
         // The listing is public; the key is sent when there is one so a key with a restricted
         // model set sees its own set rather than the catalogue.
-        ...(key ? { authorization: `Bearer ${key}` } : {}),
-        ...(custom ? {} : ATTRIBUTION_HEADERS)
+        ...(key ? { authorization: `Bearer ${key}` } : {})
       },
       signal: abort.signal
     });

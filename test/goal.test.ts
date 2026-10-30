@@ -251,7 +251,7 @@ describe('what leaves this machine', () => {
     const projected = await goal.conversationMessages(session.id);
     expect(projected).toEqual([
       { role: 'user', content: 'Run echo goal-ok' },
-      { role: 'assistant', content: 'goal-ok\n\n[Chat On Steroids: 2 tool calls ran in this turn. Arguments and results are not shown.]' }
+      { role: 'assistant', content: 'goal-ok\n\n[Tool activity: 2 tool calls ran in this turn. Arguments and results are not shown.]' }
     ]);
     expect(JSON.stringify(projected)).not.toMatch(/exec_command|SECRET_ARGUMENT|SECRET_RESULT/);
   });
@@ -267,7 +267,7 @@ describe('what leaves this machine', () => {
       message: { text: 'Step done.\n[[COS_GOAL:CONTINUE]]', chars: 31, truncated: false } });
     const messages = await goal.conversationMessages(session.id);
     // The helper still sees the note...
-    expect(messages.at(-1)!.content).toMatch(/\[Chat On Steroids: 1 tool call ran in this turn/);
+    expect(messages.at(-1)!.content).toMatch(/\[Tool activity: 1 tool call ran in this turn/);
     // ...the marker check reads the answer itself.
     expect(goal.templateDecisionText(messages)).toBe('Step done.\n[[COS_GOAL:CONTINUE]]');
     // A note the model wrote itself is part of its answer.
@@ -300,7 +300,7 @@ describe('what leaves this machine', () => {
     const projected = await goal.conversationMessages(session.id);
     expect(projected).toEqual([
       { role: 'user', content: 'Run five commands' },
-      { role: 'assistant', content: 'rotation-goal-done\n\n[Chat On Steroids: 5 tool calls ran in this turn, 4 of them before Chat On Steroids continued it in a fresh turn. Arguments and results are not shown.]' }
+      { role: 'assistant', content: 'rotation-goal-done\n\n[Tool activity: 5 tool calls ran in this turn, 4 before a fresh turn continued the task. Arguments and results are not shown.]' }
     ]);
   });
 
@@ -478,7 +478,9 @@ describe('what leaves this machine', () => {
     // Its page will type it: the message it comes back as is the app's, not the person's (#1655).
     expect(takeAutomaticReply('c-goal-2', view.reply)).toBe(true);
     expect(sent.url).toBe('https://openrouter.ai/api/v1/chat/completions');
-    expect((sent.headers as Record<string, string>).authorization).toBe('Bearer sk-or-test');
+    expect(sent.headers).toEqual({ authorization: 'Bearer sk-or-test', 'content-type': 'application/json' });
+    expect(sent.headers).not.toHaveProperty('HTTP-Referer');
+    expect(sent.headers).not.toHaveProperty('X-Title');
     expect(sent.body.model).toBe('deepseek/deepseek-v4-flash');
     expect(sent.body.messages[0].role).toBe('system');
     expect(sent.body.messages[0].content).toBe(customPrompt);
@@ -1679,6 +1681,21 @@ describe('the model catalogue', () => {
       { id: 42, name: 'nonsense' }
     ]
   };
+
+  it('omits optional provider attribution while retaining the OpenRouter key on discovery', async () => {
+    const sent: Array<{ url: string; headers: Record<string, string> }> = [];
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      sent.push({ url, headers: init.headers as Record<string, string> });
+      return Response.json(listing);
+    }) as never;
+
+    await goal.listGoalModels(0, 20);
+
+    expect(sent[0]?.url).toBe('https://openrouter.ai/api/v1/models');
+    expect(sent[0]?.headers.authorization).toBe('Bearer sk-or-test');
+    expect(sent[0]?.headers).not.toHaveProperty('HTTP-Referer');
+    expect(sent[0]?.headers).not.toHaveProperty('X-Title');
+  });
 
   /**
    * Sorted by release date rather than alphabetically or by popularity, because the question

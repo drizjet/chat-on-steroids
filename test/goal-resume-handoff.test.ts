@@ -109,6 +109,8 @@ it('sends the Compact & Resume handoff to Goal as chat B actually received it', 
   });
   expect(await rebindSession(session.id, from, to, handoff.id)).toBe(true);
   const bootstrap = resumeBootstrapText(handoff.text);
+  expect(bootstrap).toContain('Continuing a session that was compacted.');
+  expect(bootstrap).not.toContain('Chat On Steroids');
   // Successful resume observation normally records the actual user row too. Goal must not emit
   // both this row and its structured handoff fallback as two copies of one bootstrap.
   await appendEvent(session.id, {

@@ -31,6 +31,7 @@ vi.mock('electron', () => ({
 const { defaultConfig, getConfig, initConfigPath, saveConfig } = await import('../src/main/config.js');
 const {
   AgentError,
+  IdentityLostError,
   archiveWorkerAssignments,
   PRIME_ID,
   acknowledgeOffers,
@@ -518,6 +519,20 @@ describe('a worker wake ChatGPT restored as the chat draft (#882)', () => {
     own.dom.window.close();
   });
 
+  it('reclaims an exact legacy wake while rejecting a changed closing sentence', () => {
+    const legacy = 'Regenerate the parser and report.\n\n' +
+      '(Chat On Steroids: you are still worker-1 in the same run, and this is the prime agent talking to you again in the chat you already know. ' +
+      'Pick up from what you did here before rather than starting over. ' +
+      'Report with agents action=message to="prime" as you go and action=finish when this piece is done.)';
+    const old = domWithDraft(legacy);
+    expect(old.api.clearRevivalResidue()).toBe(true);
+    old.dom.window.close();
+
+    const changed = domWithDraft(legacy.replace('same run', 'same session'));
+    expect(changed.api.clearRevivalResidue()).toBe(false);
+    changed.dom.window.close();
+  });
+
   it('reclaims the wake on a computer whose Core carries a name suffix', async () => {
     // With a connector suffix the closing sentence names this computer's Core ("Report with the
     // agents tool of Chat On Steroids Core (Windows): …"); a leftover of that wake has to be
@@ -531,6 +546,8 @@ describe('a worker wake ChatGPT restored as the chat draft (#882)', () => {
       stageMessages(prime, [{ to: 'worker-1', text: 'Check the R11 inputs read-only and report.' }]).commit();
       const wake = pendingWorkerRevivals()[0]!.text;
       expect(wake).toContain('the agents tool of Chat On Steroids Core (Windows):');
+      expect(wake).toContain('(You are still worker-1 in the same run');
+      expect(wake).not.toContain('(Chat On Steroids:');
 
       const left = domWithDraft(wake);
       expect(left.api.clearRevivalResidue()).toBe(true);
@@ -5566,6 +5583,14 @@ describe('one ChatGPT account on several computers', () => {
       expect(() => sendMessage(stranger, PRIME_ID, 'done')).toThrow('No sub-agent run is active in Chat On Steroids Core (Windows). ');
     } finally { await saveConfig(previous); }
   });
+});
+
+it('keeps the worker identity refusal explicit without naming the app', () => {
+  const message = new IdentityLostError().message;
+  expect(message).toContain('WORKER_IDENTITY_LOST');
+  expect(message).toContain('No agent operation was performed.');
+  expect(message).toContain('delivery is unconfirmed');
+  expect(message).not.toContain('Chat On Steroids');
 });
 
 it('archives accepted renamed assignments before broker expiry and restores saved legacy presentation before pruning', async () => {
