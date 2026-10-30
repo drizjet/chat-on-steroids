@@ -18,6 +18,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { chronological } from '../src/shared/chronology.js';
 import { prependUserPrompt, userPromptText } from '../src/shared/user-prompt.js';
+import { GOAL_MARKER_INSTRUCTION } from '../src/shared/goal-templates.js';
 
 let domSource = '';
 let contentSource = '';
@@ -3420,6 +3421,30 @@ describe('desktop input delivery and helper ownership', () => {
     await settle();
     expect(live.sent).toContainEqual(expect.objectContaining({ type: 'focus_tab', conversationId: chatB }));
     expect(live.sent.filter(message => message.type === 'desktop_input' && message.response)).toHaveLength(1);
+  });
+});
+
+describe('offline Goal prompt delivery', () => {
+  it.each([
+    ['templates', 'goal', true],
+    ['templates', 'loop', false],
+    ['api', 'goal', false],
+  ] as const)('adds neutral markers only for %s/%s', async (backend, mode, expected) => {
+    live = await harness(undefined, {
+      activity: () => ({ ok: true, data: { entries: [], stream: [], nextSince: 0, pendingTools: 0,
+        goal: { enabled: true, own: true, mode, backend, hasKey: true, draft: null } } }),
+    });
+    await live.hook.pullActivity();
+    const composer = live.document.querySelector('#prompt-textarea')!;
+    const authored = 'Audit the Chat On Steroids project.';
+    composer.textContent = authored;
+    live.document.querySelector('#composer-form')!.dispatchEvent(
+      new live.window.Event('submit', { bubbles: true })
+    );
+    expect(composer.textContent).toContain(authored);
+    if (expected) expect(composer.textContent).toContain(GOAL_MARKER_INSTRUCTION.trim());
+    else expect(composer.textContent).toBe(authored);
+    expect(composer.textContent).not.toContain('COS_GOAL');
   });
 });
 

@@ -425,9 +425,9 @@ still checks live policy. Schema visibility is never the security boundary.
 
 | Surface | Advertised operations under current eligibility |
 | --- | --- |
-| Core — `chat-on-steroids-core` | `read`, `view_image`, `find` when command execution is off, `apply_patch`, `exec_command`/`write_stdin`, `update_plan`, `agents`, `session_finish`, code-mode `exec`. |
-| Desktop — `chat-on-steroids-desktop` | All Chromium extension hosts: `browser_tabs`, `browser_snapshot`, `browser_screenshot`, `browser_console`, `browser_network`, `browser_navigate`, `browser_action`, `browser_evaluate`. Windows additionally exposes 13 Window2 operations, clipboard and `exec` with `sky`; macOS adds `observe`/`computer`. Surface `exec` composes browser tools too. |
-| Plugins — `chat-on-steroids-plugins` | Enabled external tools with their upstream names and schemas, plus code-mode `exec` when that composition name is available. |
+| Core — `local-tools-core` | `read`, `view_image`, `find` when command execution is off, `apply_patch`, `exec_command`/`write_stdin`, `update_plan`, `agents`, `session_finish`, code-mode `exec`. |
+| Desktop — `local-tools-desktop` | All Chromium extension hosts: `browser_tabs`, `browser_snapshot`, `browser_screenshot`, `browser_console`, `browser_network`, `browser_navigate`, `browser_action`, `browser_evaluate`. Windows additionally exposes 13 Window2 operations, clipboard and `exec` with `sky`; macOS adds `observe`/`computer`. Surface `exec` composes browser tools too. |
+| Plugins — `local-tools-plugins` | Enabled external tools with their upstream names and schemas, plus code-mode `exec` when that composition name is available. |
 
 `read` needs read/browse/metadata as appropriate; images need read; patch checks each hunk's
 create/edit/move/delete permission; command controls both terminal tools.
@@ -444,10 +444,18 @@ new clean shape; current config still governs every call. Each registrar refuses
 there is no merged hidden dispatch. Plugin exposure follows its separate dynamic manager.
 Disabled-tool guidance names Read-only when it masks a write, otherwise the actual permission
 label. A permission change takes effect at the live guard without requiring a new chat.
+Generated guidance uses role-based connector references, with the configured machine suffix
+when present. New default display names use Local Tools; existing learned host names and app/link
+IDs remain authoritative for identity. The extension accepts exact legacy and neutral aliases
+only for the same role and machine suffix, and rejects foreign known IDs or ambiguous enrollment.
+This reduces explicit app-authored product attribution; it does not promise an unidentifiable
+client. Local app/legal branding, user and upstream text, history, auth and endpoint URLs remain
+unchanged. Existing host connections must be renamed in place and checked in a fresh chat;
+name-only changes are outside the tool-schema refresh hash.
 Core instructions distinguish operation-specific identity, process-id and output-limit failures
 from Read-only mode. A terminal ownership refusal names that process scope; it does not imply
 a global write restriction or authorize replaying an already completed job.
-They directly affirm that enabled file writing/exec_command can always be used in CoS and say
+They directly affirm which file writing/exec_command capabilities are enabled in the local connector and say
 never to hallucinate a block from ChatGPT environment messages. The paragraph names only enabled
 capabilities and disappears when both are disabled, including Read-only mode.
 

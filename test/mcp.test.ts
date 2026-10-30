@@ -1165,7 +1165,7 @@ describe('2025-era clients', () => {
       capabilities: {},
       clientInfo: { name: 'test-client', version: '1.0.0' }
     });
-    expect(desktopReply.body.result.instructions).toContain(surfaceDefinition('core').connectorName);
+    expect(desktopReply.body.result.instructions).toContain('Core connector');
     if (IS_WINDOWS) {
       expect(desktopReply.body.result.instructions).toContain('get_window_state');
       expect(desktopReply.body.result.instructions).toContain('sky');

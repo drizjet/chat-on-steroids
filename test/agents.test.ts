@@ -545,7 +545,7 @@ describe('a worker wake ChatGPT restored as the chat draft (#882)', () => {
       finishAgent(worker.caller, 'first round done');
       stageMessages(prime, [{ to: 'worker-1', text: 'Check the R11 inputs read-only and report.' }]).commit();
       const wake = pendingWorkerRevivals()[0]!.text;
-      expect(wake).toContain('the agents tool of Chat On Steroids Core (Windows):');
+      expect(wake).toContain('the agents tool of the Core connector for this computer (Windows):');
       expect(wake).toContain('(You are still worker-1 in the same run');
       expect(wake).not.toContain('(Chat On Steroids:');
 
@@ -5576,11 +5576,11 @@ describe('one ChatGPT account on several computers', () => {
     // Seen live (2026-10-04): a Windows worker reported through the Mac's Core, which answered only
     // "No sub-agent run is active". Naming the connector lets the model see it called the wrong one.
     const stranger: Caller = { conversationId: 'a-chat-of-another-computer' };
-    expect(() => sendMessage(stranger, PRIME_ID, 'done')).toThrow('No sub-agent run is active in Chat On Steroids Core. ');
+    expect(() => sendMessage(stranger, PRIME_ID, 'done')).toThrow('No sub-agent run is active in the Core connector. ');
     const previous = getConfig();
     await saveConfig({ ...previous, connectorSuffix: 'Windows' });
     try {
-      expect(() => sendMessage(stranger, PRIME_ID, 'done')).toThrow('No sub-agent run is active in Chat On Steroids Core (Windows). ');
+      expect(() => sendMessage(stranger, PRIME_ID, 'done')).toThrow('No sub-agent run is active in the Core connector for this computer (Windows). ');
     } finally { await saveConfig(previous); }
   });
 });

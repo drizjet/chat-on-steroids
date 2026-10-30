@@ -17581,7 +17581,7 @@ describe('worker brief on a computer with its own connector names', () => {
     await saveConfig({ ...previous, connectorSuffix: 'Windows VM' });
     try {
       expect(workerBriefForTests('worker-1', 'Check the tests'))
-        .toContain('Report to prime through the agents tool of Chat On Steroids Core (Windows VM) — ');
+        .toContain('Report to prime through the agents tool of the Core connector for this computer (Windows VM) — ');
     } finally { await saveConfig(previous); }
   });
 });
