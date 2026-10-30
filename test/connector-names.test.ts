@@ -12,18 +12,27 @@ import { makeTempDir, removeTempDir } from './helpers.js';
 // which computer's extension recognizes a call as its own.
 
 describe('connector names', () => {
+  it('keeps provider-facing identity neutral, role-specific and machine-specific', () => {
+    const names=connectorNames('Work PC');
+    expect(new Set(Object.values(names)).size).toBe(3);
+    for (const surface of ['core','desktop','plugins'] as const) {
+      expect(names[surface]).not.toMatch(/chat[ _-]*on[ _-]*steroids|\bCoS\b/i);
+      expect(names[surface]).toContain('(Work PC)');
+      expect(surfaceDefinition(surface).serverName).not.toMatch(/chat[ _-]*on[ _-]*steroids/i);
+    }
+  });
   it('keeps the plain names without a suffix', () => {
-    expect(connectorNames()).toEqual({ core: 'Chat On Steroids Core', desktop: 'Chat On Steroids Desktop', plugins: 'Chat On Steroids Plugins' });
+    expect(connectorNames()).toEqual({ core: 'Local Tools Core', desktop: 'Local Tools Desktop', plugins: 'Local Tools Plugins' });
     expect(connectorNames('')).toEqual(connectorNames());
   });
 
   it('names this computer\'s set with its suffix in parentheses', () => {
     expect(connectorNames('Windows VM')).toEqual({
-      core: 'Chat On Steroids Core (Windows VM)',
-      desktop: 'Chat On Steroids Desktop (Windows VM)',
-      plugins: 'Chat On Steroids Plugins (Windows VM)'
+      core: 'Local Tools Core (Windows VM)',
+      desktop: 'Local Tools Desktop (Windows VM)',
+      plugins: 'Local Tools Plugins (Windows VM)'
     });
-    expect(connectorName('core', '  Büro   PC_2.0-a  ')).toBe('Chat On Steroids Core (Büro PC_2.0-a)');
+    expect(connectorName('core', '  Büro   PC_2.0-a  ')).toBe('Local Tools Core (Büro PC_2.0-a)');
   });
 
   it.each([
@@ -31,7 +40,7 @@ describe('connector names', () => {
     ['not a string', 42], ['null', null]
   ])('falls back to the plain names for %s', (_case, value) => {
     expect(normalizeConnectorSuffix(value)).toBe('');
-    expect(connectorName('core', value)).toBe('Chat On Steroids Core');
+    expect(connectorName('core', value)).toBe('Local Tools Core');
   });
 });
 
@@ -59,7 +68,7 @@ describe('the configured suffix', () => {
     expect(SURFACE_IDS.map(id => surfaceDefinition(id).connectorName)).toEqual(Object.values(connectorNames('Windows')));
     // The plain definition table itself is never changed.
     await saveConfig({ ...getConfig(), connectorSuffix: '' });
-    expect(surfaceDefinition('core').connectorName).toBe('Chat On Steroids Core');
+    expect(surfaceDefinition('core').connectorName).toBe('Local Tools Core');
   });
 });
 

@@ -7,9 +7,9 @@
  * by those exact names, never by prefix, so it never vouches for another connector's calls.
  *
  * One ChatGPT account used on two computers needs two connectors per surface, and they cannot
- * share a name: a suffix names this computer's set, e.g. "Chat On Steroids Core (Windows)".
+ * share a name: a suffix names this computer's set, e.g. "Local Tools Core (Windows)".
  */
-export const CONNECTOR_BRAND = 'Chat On Steroids';
+export const CONNECTOR_BRAND = 'Local Tools';
 export const CONNECTOR_SUFFIX_MAX = 32;
 /** Letters, digits, spaces, dots, dashes and underscores; the app adds the parentheses. */
 export const CONNECTOR_SUFFIX_PATTERN = /^[\p{L}\p{N} ._-]*$/u;
@@ -32,4 +32,10 @@ export function connectorName(surface: ConnectorSurface, suffix: unknown = ''): 
 
 export function connectorNames(suffix: unknown = ''): Record<ConnectorSurface, string> {
   return { core: connectorName('core', suffix), desktop: connectorName('desktop', suffix), plugins: connectorName('plugins', suffix) };
+}
+
+/** A routing hint, never a claimed ChatGPT app name or an authorization identity. */
+export function connectorReference(surface: ConnectorSurface, suffix: unknown = ''): string {
+  const tag = normalizeConnectorSuffix(suffix);
+  return `${SURFACE_WORD[surface]} connector${tag ? ` for this computer (${tag})` : ''}`;
 }

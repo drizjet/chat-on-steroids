@@ -63,6 +63,10 @@ it('performs SDK DCR + PKCE with a real loopback callback, retains endpoint/issu
   const restored = await load(server.fetcher);
   expect(await auth(restored, { serverUrl: endpoint, fetchFn: restored.fetch })).toBe('AUTHORIZED');
   expect(server.requests.filter(request => request.url.endsWith('/register'))).toHaveLength(1);
+  const registration=JSON.parse(server.requests.find(request=>request.url.endsWith('/register'))!.body);
+  expect(registration.client_name).not.toMatch(/chat[ _-]*on[ _-]*steroids|\bCoS\b/i);
+  expect(registration.grant_types).toEqual(['authorization_code','refresh_token']);
+  expect(registration.token_endpoint_auth_method).toBe('none');
   expect(server.requests.filter(request => request.url.endsWith('/token'))).toHaveLength(2);
   expect(restored.tokens({ issuer: 'https://another.example' })).toBeUndefined();
   expect((await load(server.fetcher, 'two')).tokens()).toBeUndefined();

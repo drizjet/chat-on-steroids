@@ -14,6 +14,12 @@ const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.' + 'eyJzdWIiOiIxMjM0NTY3ODkwI
 const pem = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACD0aQ==\n-----END OPENSSH PRIVATE KEY-----';
 
 describe('secrets shield (masking only unmistakable credentials)', () => {
+  it('keeps user project names while using neutral protection labels',()=>{
+    const result=maskSecrets(`User task: inspect Chat On Steroids. ${openai}`);
+    expect(result.text).toContain('User task: inspect Chat On Steroids.');
+    expect(result.text).toContain('[OpenAI key masked locally]');
+    expect(result.text).not.toContain(openai);
+  });
   it.each([
     ['OpenAI key', openai],
     ['Anthropic key', anthropic],
@@ -27,7 +33,7 @@ describe('secrets shield (masking only unmistakable credentials)', () => {
   ])('masks a %s and says what it was', (kind, secret) => {
     const { text, masked } = maskSecrets(`before ${secret} after`);
     expect(text).not.toContain(secret);
-    expect(text).toContain(`[${kind} hidden by Chat On Steroids]`);
+    expect(text).toContain(`[${kind} masked locally]`);
     expect(text.startsWith('before ')).toBe(true);
     expect(text.endsWith(' after')).toBe(true);
     expect(masked).toEqual([kind]);
@@ -35,26 +41,26 @@ describe('secrets shield (masking only unmistakable credentials)', () => {
 
   it('masks a whole private key block, keeping its header so the model knows what it was', () => {
     const { text, masked } = maskSecrets(`id_ed25519:\n${pem}\ndone`);
-    expect(text).toBe('id_ed25519:\n-----BEGIN OPENSSH PRIVATE KEY-----\n[private key hidden by Chat On Steroids]\n-----END OPENSSH PRIVATE KEY-----\ndone');
+    expect(text).toBe('id_ed25519:\n-----BEGIN OPENSSH PRIVATE KEY-----\n[private key masked locally]\n-----END OPENSSH PRIVATE KEY-----\ndone');
     expect(masked).toEqual(['private key']);
   });
 
   it.each([
-    ['OPENAI_API_KEY=abc123def456ghi789', 'OPENAI_API_KEY=[value hidden by Chat On Steroids]'],
-    ['export DB_PASSWORD="s3cr3t-pass"', 'export DB_PASSWORD="[value hidden by Chat On Steroids]"'],
-    ["SESSION_SECRET='Zx9!long-value'", "SESSION_SECRET='[value hidden by Chat On Steroids]'"],
-    ['GITHUB_TOKEN: abcdefghijklmnop', 'GITHUB_TOKEN: [value hidden by Chat On Steroids]']
+    ['OPENAI_API_KEY=abc123def456ghi789', 'OPENAI_API_KEY=[value masked locally]'],
+    ['export DB_PASSWORD="s3cr3t-pass"', 'export DB_PASSWORD="[value masked locally]"'],
+    ["SESSION_SECRET='Zx9!long-value'", "SESSION_SECRET='[value masked locally]'"],
+    ['GITHUB_TOKEN: abcdefghijklmnop', 'GITHUB_TOKEN: [value masked locally]']
   ])('masks the value of a secret-named setting: %s', (line, expected) => {
     expect(maskSecrets(line).text).toBe(expected);
   });
 
   it('masks secret settings in a file with Windows line endings', () => {
-    expect(maskSecrets('A=1\r\nAPI_TOKEN=abcdefgh12345678\r\nB=2\r\n').text).toBe('A=1\r\nAPI_TOKEN=[value hidden by Chat On Steroids]\r\nB=2\r\n');
+    expect(maskSecrets('A=1\r\nAPI_TOKEN=abcdefgh12345678\r\nB=2\r\n').text).toBe('A=1\r\nAPI_TOKEN=[value masked locally]\r\nB=2\r\n');
   });
 
   it('masks secret settings written as JSON, keeping the quotes and the comma', () => {
     expect(maskSecrets('{\n  "DB_PASSWORD": "hunter2hunter2",\n  "PORT": 5432\n}').text)
-      .toBe('{\n  "DB_PASSWORD": "[value hidden by Chat On Steroids]",\n  "PORT": 5432\n}');
+      .toBe('{\n  "DB_PASSWORD": "[value masked locally]",\n  "PORT": 5432\n}');
   });
 
   it.each([
@@ -106,12 +112,12 @@ describe('secrets shield (masking only unmistakable credentials)', () => {
     const value = 'Zq9' + 'x'.repeat(5000);
     const { text, masked } = maskSecrets(`API_TOKEN=${value}`);
     expect(masked).toEqual(['secret setting']);
-    expect(text).toBe('API_TOKEN=[value hidden by Chat On Steroids]');
+    expect(text).toBe('API_TOKEN=[value masked locally]');
   });
 
   it('masks a quoted password that holds the other quote, and leaves code that reads one alone', () => {
-    expect(maskSecrets(`DB_PASSWORD="hunter2'plus"`).text).toBe('DB_PASSWORD="[value hidden by Chat On Steroids]"');
-    expect(maskSecrets(`DB_PASSWORD='hunter2"plus'`).text).toBe("DB_PASSWORD='[value hidden by Chat On Steroids]'");
+    expect(maskSecrets(`DB_PASSWORD="hunter2'plus"`).text).toBe('DB_PASSWORD="[value masked locally]"');
+    expect(maskSecrets(`DB_PASSWORD='hunter2"plus'`).text).toBe("DB_PASSWORD='[value masked locally]'");
     for (const line of ['API_TOKEN = getenv("API_TOKEN")', "SECRET_KEY: os.environ['SECRET_KEY']"]) {
       expect(maskSecrets(line)).toEqual({ text: line, masked: [] });
     }
@@ -120,7 +126,7 @@ describe('secrets shield (masking only unmistakable credentials)', () => {
   it('masks a PGP private key block', () => {
     const pgp = '-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBGVhZXQBCAC3\n=ab12\n-----END PGP PRIVATE KEY BLOCK-----';
     const { text, masked } = maskSecrets(`gpg --export-secret-keys\n${pgp}`);
-    expect(text).toBe('gpg --export-secret-keys\n-----BEGIN PGP PRIVATE KEY BLOCK-----\n[private key hidden by Chat On Steroids]\n-----END PGP PRIVATE KEY BLOCK-----');
+    expect(text).toBe('gpg --export-secret-keys\n-----BEGIN PGP PRIVATE KEY BLOCK-----\n[private key masked locally]\n-----END PGP PRIVATE KEY BLOCK-----');
     expect(masked).toEqual(['private key']);
   });
 
@@ -128,7 +134,7 @@ describe('secrets shield (masking only unmistakable credentials)', () => {
   ('masks a short secret value too: %s', line => {
     const { text, masked } = maskSecrets(line);
     expect(masked).toEqual(['secret setting']);
-    expect(text).toContain('[value hidden by Chat On Steroids]');
+    expect(text).toContain('[value masked locally]');
     expect(text).not.toMatch(/hunter2|abc|k9|'x'|1234/);
   });
 
@@ -179,7 +185,7 @@ describe('shieldToolResult', () => {
     expect(JSON.stringify(shielded)).not.toContain(github);
     expect(JSON.stringify(shielded)).not.toContain(stripe);
     expect(shielded.content[1]).toBe(image);
-    expect(shielded.structuredContent).toMatchObject({ exitCode: 0, nested: { list: [expect.stringContaining('hidden'), 7, null] } });
+    expect(shielded.structuredContent).toMatchObject({ exitCode: 0, nested: { list: [expect.stringContaining('masked locally'), 7, null] } });
     expect(shielded.isError).toBe(false);
     expect(masked).toEqual(['OpenAI key', 'GitHub token', 'Stripe key']);
   });

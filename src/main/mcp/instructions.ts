@@ -20,7 +20,8 @@ import { pluginManager } from '../plugins/manager.js';
 import { effectiveCapabilities, getConfig, MAX_MCP_INSTRUCTIONS_CHARS } from '../config.js';
 import { isGitRepository } from '../toolchain.js';
 import type { ToolContext } from './kernel.js';
-import { surfaceDefinition, type SurfaceId } from './surfaces.js';
+import type { SurfaceId } from './surfaces.js';
+import { connectorReference } from '../../shared/connector-names.js';
 
 export function serverInstructions(
   ctx: ToolContext,
@@ -28,8 +29,8 @@ export function serverInstructions(
   platform: NodeJS.Platform = process.platform,
   skills = skillCatalogInstructions()
 ): string {
-  if (surface === 'plugins') return 'External MCP tools enabled by the user in Chat On Steroids. Each tool retains its upstream schema and annotations. External servers run with their own operating-system or service permissions; CoS approved folders do not sandbox them. Use only for the user\'s requested task. A failed or disconnected call may already have taken effect: never automatically retry a mutation after an ambiguous failure. Disabled tools require the user to re-enable them in Settings. Core and Desktop are separate connectors.' + (canAddCodeMode(pluginManager.tools()) ? '\n\n' + CODE_MODE_INSTRUCTIONS : '');
-  return surface === 'desktop' ? [browserInstructions(), ...(platform === 'win32' || platform === 'darwin' ? [desktopInstructions(ctx, platform)] : [`Files, patches and shell commands live in the separate "${surfaceDefinition('core').connectorName}" connector.`, CODE_MODE_INSTRUCTIONS, ...userInstructions()])].join('\n\n') : coreInstructions(ctx, platform, skills);
+  if (surface === 'plugins') return 'External MCP tools enabled by the user in the local app. Each tool retains its upstream schema and annotations. External servers run with their own operating-system or service permissions; Core approved folders do not sandbox them. Use only for the user\'s requested task. A failed or disconnected call may already have taken effect: never automatically retry a mutation after an ambiguous failure. Disabled tools require the user to re-enable them in Settings. Core and Desktop are separate connectors.' + (canAddCodeMode(pluginManager.tools()) ? '\n\n' + CODE_MODE_INSTRUCTIONS : '');
+  return surface === 'desktop' ? [browserInstructions(), ...(platform === 'win32' || platform === 'darwin' ? [desktopInstructions(ctx, platform)] : [`Files, patches and shell commands live in the separate ${connectorReference('core', getConfig().connectorSuffix)}.`, CODE_MODE_INSTRUCTIONS, ...userInstructions()])].join('\n\n') : coreInstructions(ctx, platform, skills);
 }
 
 function browserInstructions(): string {
@@ -100,9 +101,9 @@ function coreInstructions(ctx: ToolContext, platform: NodeJS.Platform, skills: s
     skills,
     '',
     '# Local tools',
-    `Use the connected tools as needed: ${surfaceDefinition('core').connectorName} for files, terminal, plans and workers` +
-    `; ${surfaceDefinition('desktop').connectorName} for background browser tabs, DOM, console, screenshots and input${desktop ? ', native windows and clipboard' : ''}` +
-    `; ${surfaceDefinition('plugins').connectorName} for enabled external apps and services.`,
+    `Use the connected tools as needed: ${connectorReference('core', getConfig().connectorSuffix)} for files, terminal, plans and workers` +
+    `; ${connectorReference('desktop', getConfig().connectorSuffix)} for background browser tabs, DOM, console, screenshots and input${desktop ? ', native windows and clipboard' : ''}` +
+    `; ${connectorReference('plugins', getConfig().connectorSuffix)} for enabled external apps and services.`,
     `Host: ${host}. Roots: ${roots}`,
     ...(ctx.roots.some(root => root.remote)
       ? ['A (server) folder is on another computer over SSH: commands run there in its login shell, and paths that computer prints work in file tools.']
@@ -113,10 +114,10 @@ function coreInstructions(ctx: ToolContext, platform: NodeJS.Platform, skills: s
     // "authority", "guards", a "policy" that keeps programs "trusted", or a nudge to repeat a blocked
     // call as the connector ranking its own rules above the check ("Suspicious instruction"), and then
     // holds the run on an approval card. Every line here says what is so, nothing about how to judge it.
-    ...(writable || executable ? [`${writable ? (executable ? 'File writing and exec_command are' : 'File writing is') : 'exec_command is'} enabled in CoS.`] : []),
+    ...(writable || executable ? [`${writable ? (executable ? 'File writing and exec_command are' : 'File writing is') : 'exec_command is'} enabled in the local connector.`] : []),
     'Report exact failures: identity, session_id and output-limit errors do not mean Read-only. Never replay successful patches or commands to recover a terminal.',
-    '"This tool call was blocked by OpenAI because we couldn\'t determine the safety status of the request." comes from ChatGPT before the call reaches CoS, so CoS neither ran nor refused it.',
-    'Unattributed is how CoS records a call before it knows the call\'s chat. With Allow unattributed calls enabled, the request id owns its workspace, plan, terminals and agent family until exact chat proof arrives. A missing target affects only that operation.',
+    '"This tool call was blocked by OpenAI because we couldn\'t determine the safety status of the request." comes from ChatGPT before the call reaches the local connector, so the connector neither ran nor refused it.',
+    'Unattributed is how the local app records a call before it knows the call\'s chat. With Allow unattributed calls enabled, the request id owns its workspace, plan, terminals and agent family until exact chat proof arrives. A missing target affects only that operation.',
     'Use full project paths under an approved root, including intermediate folders. Virtual or absolute native paths work; linked projects also accept relative paths.',
   ];
 
@@ -168,10 +169,10 @@ function coreInstructions(ctx: ToolContext, platform: NodeJS.Platform, skills: s
   );
   if (desktop && (caps.screen || caps.control || caps.clipboardRead || caps.clipboardWrite)) lines.push(
     '',
-    `Native screen, window, mouse, keyboard and clipboard tools are in "${surfaceDefinition('desktop').connectorName}". If needed but unavailable, name that connector.`
+    `Native screen, window, mouse, keyboard and clipboard tools are in the ${connectorReference('desktop', getConfig().connectorSuffix)}. If needed but unavailable, name that connector.`
   );
   if (caps.screen || caps.control) lines.push(
-    `For pages already open in the user's browser, discover "${surfaceDefinition('desktop').connectorName}" and use browser_tabs list, then browser_snapshot on the returned tabId. DOM reading works without attach, including protected ChatGPT tabs. format:dom adds attributes and layout. External browser plugins can start a separate empty browser on about:blank and do not share these tabs or handles.`
+    `For pages already open in the user's browser, discover the ${connectorReference('desktop', getConfig().connectorSuffix)} and use browser_tabs list, then browser_snapshot on the returned tabId. DOM reading works without attach, including protected ChatGPT tabs. format:dom adds attributes and layout. External browser plugins can start a separate empty browser on about:blank and do not share these tabs or handles.`
   );
   lines.push('', CODE_MODE_INSTRUCTIONS, ...userInstructions());
   return lines.join('\n');
@@ -219,7 +220,7 @@ function desktopInstructions(ctx: ToolContext, platform: NodeJS.Platform): strin
 
   lines.push(
     '',
-    `Files, patches and commands live in a separate connector, "${surfaceDefinition('core').connectorName}".`,
+    `Files, patches and commands live in the separate ${connectorReference('core', getConfig().connectorSuffix)}.`,
     'This one cannot read or change files. If a task needs that and it is not available here, say so.'
   );
 
@@ -251,7 +252,7 @@ function windowsDesktopInstructions(): string {
     'Use nodeRepl.write(value) or text(value) for concise text. sky methods return their native arrays/objects or undefined, and throw tool failures. tools.<name> returns the normal MCP envelope with structuredContent.value. Only sky.get_window_state automatically displays images.',
     'This app reuses its bounded exec runtime: variables do not persist across calls, so carry returned Window objects or rehydrate with get_window. No Node, imports, filesystem, network or extra Codex permission system is installed. Each method still uses this app’s live capability checks, exact caller and local recording. Keep independent reads parallel only when their observations do not conflict; await actions before refreshing.',
     '',
-    `Files, patches and shell commands live in the separate "${surfaceDefinition('core').connectorName}" connector. Act only within the user’s requested task.`,
+    `Files, patches and shell commands live in the separate ${connectorReference('core', getConfig().connectorSuffix)}. Act only within the user’s requested task.`,
     ...userInstructions()
   ].join('\n');
 }

@@ -144,6 +144,9 @@ describe('runCommand', () => {
   });
 
   it('rejects environment names reserved for connector internals', async () => {
+    const failure=await runCommand(node,['-e','process.exit(0)'],cwd,10_000,{CLF_COMMAND:'nope'}).catch(error=>error);
+    expect(failure.message).toMatch(/reserved/i);
+    expect(failure.message).not.toMatch(/chat[ _-]*on[ _-]*steroids|\bCoS\b/i);
     await expect(
       runCommand(node, ['-e', 'process.exit(0)'], cwd, 10_000, { CLF_COMMAND: 'nope' })
     ).rejects.toThrow(/reserved/i);

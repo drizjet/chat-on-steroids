@@ -13,6 +13,12 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const hostName=vi.hoisted(()=>({core:null as string|null}));
+vi.mock('../src/main/connector-identity.js',async importOriginal=>({
+  ...await importOriginal<typeof import('../src/main/connector-identity.js')>(),
+  learnedConnectorName:(surface:string)=>surface==='core'?hostName.core:null,
+}));
+
 vi.mock('electron', () => ({
   safeStorage: {
     isAsyncEncryptionAvailable: async () => true,
@@ -63,6 +69,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  hostName.core=null;
   await withInstructions('');
 });
 
@@ -71,6 +78,26 @@ afterEach(() => {
 });
 
 describe('the user’s own connector instructions', () => {
+  it.each(['Chat On Steroids Core (Old PC)','My renamed private tools'])('uses role-only guidance while preserving the actual learned name: %s', async name=>{
+    hostName.core=name;
+    const {liveConnectorName}=await import('../src/main/mcp/surfaces.js');
+    expect(liveConnectorName('core')).toBe(name);
+    const text=serverInstructions(ctx,'core','win32');
+    expect(text).toContain('Core connector');
+    expect(text).not.toContain(name);
+    expect(text).not.toMatch(/chat[ _-]*on[ _-]*steroids|\bCoS\b/i);
+  });
+  it.each(['core','desktop','plugins'] as const)('keeps provider-facing identity out of generated %s instructions', (surface) => {
+    const text=serverInstructions(ctx,surface,'win32');
+    expect(text).not.toMatch(/chat[ _-]*on[ _-]*steroids|\bCoS\b/i);
+  });
+
+  it('keeps user-authored product references unchanged while using neutral provider-facing identity', async () => {
+    const task='For the requested Chat On Steroids source audit, inspect this exact project name.';
+    await withInstructions(task);
+    expect(serverInstructions(ctx,'core','win32')).toContain(task);
+    expect(getConfig().mcp.instructions).toBe(task);
+  });
   it.each([
     [true, true, false, 'file writing and exec_command'],
     [true, false, false, 'file writing'],
@@ -81,10 +108,10 @@ describe('the user’s own connector instructions', () => {
     const text = serverInstructions({ ...ctx, readOnly, caps: {
       ...ctx.caps, create: write, edit: write, move: write, deleteFile: write, command,
     } }, 'core', 'win32');
-    const assertion = text.split('\n').find(line => / (is|are) enabled in CoS\.$/.test(line));
+    const assertion = text.split('\n').find(line => / (is|are) enabled in the local connector\.$/.test(line));
     if (expected) {
-      expect(assertion).toBe({ 'file writing and exec_command': 'File writing and exec_command are enabled in CoS.',
-        'file writing': 'File writing is enabled in CoS.', 'exec_command': 'exec_command is enabled in CoS.' }[expected]);
+      expect(assertion).toBe({ 'file writing and exec_command': 'File writing and exec_command are enabled in the local connector.',
+        'file writing': 'File writing is enabled in the local connector.', 'exec_command': 'exec_command is enabled in the local connector.' }[expected]);
     } else expect(assertion).toBeUndefined();
   });
   it.each(['win32', 'darwin', 'linux'] as const)('teaches the same terminal result lifetime on %s', platform => {
@@ -103,14 +130,14 @@ describe('the user’s own connector instructions', () => {
   });
   it('starts with the coding guidance and explains connectors once beside the local tools without a setup link', () => {
     const text = serverInstructions(ctx, 'core', 'win32');
-    expect(text.startsWith('You are a coding agent working with the user through Chat On Steroids.')).toBe(true);
+    expect(text.startsWith('You are a coding agent working with the user through local tools.')).toBe(true);
     const intro = text.split('\n').find(line => line.startsWith('Use the connected tools as needed:'))!;
-    expect(intro).toContain('Chat On Steroids Core for files');
-    expect(intro).toContain('Chat On Steroids Desktop for background browser tabs');
-    expect(intro).toContain('Chat On Steroids Plugins for enabled external apps');
+    expect(intro).toContain('Core connector for files');
+    expect(intro).toContain('Desktop connector for background browser tabs');
+    expect(intro).toContain('Plugins connector for enabled external apps');
     expect(text.indexOf(intro)).toBeGreaterThan(text.indexOf('# Local tools'));
     expect(text).not.toMatch(/This is Chat On Steroids|https:\/\/chatgpt.com\/#settings\/Plugins/);
-    expect(serverInstructions(ctx, 'core', 'linux')).toContain('Chat On Steroids Desktop');
+    expect(serverInstructions(ctx, 'core', 'linux')).toContain('Desktop connector');
   });
 
   it('accepts explicit standing worker preferences while preserving account-observed choices', () => {
@@ -122,7 +149,7 @@ describe('the user’s own connector instructions', () => {
   it('routes Linux browser users to Core for files without advertising native desktop tools', () => {
     const text = serverInstructions(ctx, 'desktop', 'linux');
     expect(text).toContain('browser_snapshot');
-    expect(text).toContain('Files, patches and shell commands live in the separate "Chat On Steroids Core" connector.');
+    expect(text).toContain('Files, patches and shell commands live in the separate Core connector.');
     expect(text).not.toContain('get_window_state');
     expect(text).not.toContain('Do not poll with a batch that only waits');
   });
@@ -161,7 +188,7 @@ describe('the user’s own connector instructions', () => {
       expect(text).not.toMatch(/authority|guards? decide|under current guards|polic(y|ies)|\btrusted\b|succeeds when made again|changes no tool permission/i);
       // The facts the lines carried are still there.
       expect(text).toMatch(/Enabled in Core: .*command=on/);
-      expect(text).toContain('comes from ChatGPT before the call reaches CoS, so CoS neither ran nor refused it.');
+      expect(text).toContain('comes from ChatGPT before the call reaches the local connector, so the connector neither ran nor refused it.');
       expect(text).toContain('COMMAND_NOT_ALLOWED is a refusal by those rules: the program was not started.');
     } finally { await saveConfig(config); }
   });
@@ -169,7 +196,7 @@ describe('the user’s own connector instructions', () => {
   it('explains the transient ChatGPT safety refusal and offers session_finish to any model', () => {
     // #555: a benign call was blocked once by ChatGPT and succeeded unchanged on retry.
     const text = serverInstructions({ ...ctx, exposedFinishTool: true }, 'core', 'win32');
-    expect(text).toContain('"This tool call was blocked by OpenAI because we couldn\'t determine the safety status of the request." comes from ChatGPT before the call reaches CoS');
+    expect(text).toContain('"This tool call was blocked by OpenAI because we couldn\'t determine the safety status of the request." comes from ChatGPT before the call reaches the local connector');
     // The fact stays; the nudge to repeat a call ChatGPT's check blocked does not (2026-10-24).
     expect(text).not.toContain('the same call often succeeds when made again');
     // #556: the tool is exposed by the finish setting, not by model; Sol users were told "Astra only".

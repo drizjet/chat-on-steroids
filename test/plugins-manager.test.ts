@@ -45,6 +45,20 @@ afterEach(async () => {
   await removeTempDir(dir);
 });
 describe('external plugin authority', () => {
+  it('uses neutral provider-facing identity during the actual upstream MCP handshake', async () => {
+    const inspectClient=fixture
+      .replace('const tools=', 'let caller;const tools=')
+      .replace("if(m.method==='initialize')result=", "if(m.method==='initialize')caller=m.params.clientInfo;if(m.method==='initialize')result=")
+      .replace('text:process.env.TEST_SECRET||m.params.arguments.value', 'text:JSON.stringify(caller)');
+    await fs.writeFile(entry,inspectClient);
+    await manager.install({name:'Public identity fixture',source:{kind:'command',command:process.execPath,args:[entry]}});
+    const result=await manager.call(manager.tools()[0]!.name,{value:'inspect-client'});
+    const block=result.content?.find(item=>item.type==='text');
+    expect(block?.type).toBe('text');
+    const info=JSON.parse((block as {text:string}).text);
+    expect(info.name).not.toMatch(/chat[ _-]*on[ _-]*steroids|\bCoS\b/i);
+    expect(info.version).toBe('1.0.0');
+  });
   it.each(['read', 'exec_command', 'write_stdin', 'agents'] as const)('names the Core connector for %s without dispatching or implying a disabled permission', async (name) => {
     const upstream = vi.spyOn(Client.prototype, 'callTool');
     const outcome = vi.fn();
@@ -52,7 +66,7 @@ describe('external plugin authority', () => {
     const text = JSON.stringify(result);
     expect(text).toContain('UNKNOWN_TOOL');
     expect(text).toContain('current Plugins catalog');
-    expect(text).toContain('Chat On Steroids Core');
+    expect(text).toContain('Core connector');
     expect(text).toContain('Discover or select');
     expect(text).not.toContain('PLUGIN_DISABLED');
     expect(text).not.toContain('is connected');
@@ -72,12 +86,12 @@ describe('external plugin authority', () => {
     try {
       suffix.mockReturnValue({ ...previous, connectorSuffix: 'Alpha' });
       const first = JSON.stringify(await manager.call('exec_command'));
-      expect(first).toContain('Chat On Steroids Core (Alpha)');
+      expect(first).toContain('Core connector for this computer (Alpha)');
       expect(first).toContain('UNKNOWN_TOOL');
       expect(first).toContain('This call was not dispatched.');
       suffix.mockReturnValue({ ...previous, connectorSuffix: 'Beta' });
       const second = JSON.stringify(await manager.call('write_stdin'));
-      expect(second).toContain('Chat On Steroids Core (Beta)');
+      expect(second).toContain('Core connector for this computer (Beta)');
       expect(second).not.toContain('Alpha');
       expect(second).toContain('UNKNOWN_TOOL');
       expect(second).not.toContain('is connected');
@@ -92,7 +106,7 @@ describe('external plugin authority', () => {
     const outcome = vi.fn();
     const text = JSON.stringify(await manager.call(name, {}, outcome));
     expect(text).toContain('UNKNOWN_TOOL: This tool name is not in the current Plugins catalog. It may be stale or belong to another connector. Check the current Plugins tool list.');
-    expect(text).not.toContain('Chat On Steroids Core');
+    expect(text).not.toContain('Core connector');
     expect(text).not.toContain('Discover or select');
     expect(text).toContain('This call was not dispatched.');
     expect(outcome).toHaveBeenCalledExactlyOnceWith('tool_rejected');
@@ -109,7 +123,7 @@ describe('external plugin authority', () => {
     const outcome = vi.fn();
     const disabled = JSON.stringify(await manager.call('exec_command', { value: 'blocked' }, outcome));
     expect(disabled).toContain('PLUGIN_DISABLED');
-    expect(disabled).not.toContain('Chat On Steroids Core');
+    expect(disabled).not.toContain('Core connector');
     expect(disabled).not.toContain('UNKNOWN_TOOL');
     expect(disabled).toContain('This call was not dispatched.');
     expect(outcome).toHaveBeenCalledExactlyOnceWith('tool_rejected');
@@ -323,7 +337,7 @@ describe('external plugin authority', () => {
     expect(timedOut.isError).toBe(true);
     expect(JSON.stringify(timedOut)).toContain('PLUGIN_CALL_TIMEOUT');
     expect(JSON.stringify(timedOut)).toContain('may have completed');
-    expect(JSON.stringify(timedOut)).toContain('CoS did not retry');
+    expect(JSON.stringify(timedOut)).toContain('The local bridge did not retry');
     expect(outcome).toHaveBeenCalledExactlyOnceWith('tool_execution_error');
     expect(manager.snapshot().plugins[0]?.status).toBe('ready');
     expect((await manager.call('Echo.Mixed', { value: 'after cancellation' })).structuredContent).toEqual({ value: 'after cancellation' });

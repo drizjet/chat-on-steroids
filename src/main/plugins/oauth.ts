@@ -5,6 +5,7 @@ import {
   type StoredOAuthClientInformation, type StoredOAuthTokens,
 } from '@modelcontextprotocol/client';
 import { getSecret, setSecret, clearSecret } from '../secrets.js';
+import { connectorName } from '../../shared/connector-names.js';
 
 export class PluginNeedsAuth extends Error {
   constructor() { super('Sign in to connect this plugin.'); }
@@ -92,7 +93,7 @@ export class PluginOAuth implements OAuthClientProvider {
   }
   get redirectUrl(): string { return this.interactive?.redirectUri ?? this.data.redirectUri ?? 'http://127.0.0.1:1/oauth/callback'; }
   get clientMetadata() {
-    return { client_name: 'Chat On Steroids', redirect_uris: [this.redirectUrl], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' };
+    return { client_name: connectorName('plugins'), redirect_uris: [this.redirectUrl], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' };
   }
   state(): string { this.check(); if (!this.interactive) throw new PluginNeedsAuth(); return this.interactive.state; }
   clientInformation(context?: { issuer: string }): StoredOAuthClientInformation | undefined {

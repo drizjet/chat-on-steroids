@@ -3,7 +3,8 @@ import { getConfig } from '../config.js';
 import { guard, failIdentity, type SurfaceRegistrar, type ToolResult } from './kernel.js';
 import { codeModeSchema, runCodeMode, CODE_MODE_LIMITS, type CodeModeTool, type CodeModeOptions } from './code-mode-runtime.js';
 import { toolDeclaration } from './tool-declarations.js';
-import { SURFACES, surfaceDefinition, type SurfaceId } from './surfaces.js';
+import { SURFACES, type SurfaceId } from './surfaces.js';
+import { connectorReference } from '../../shared/connector-names.js';
 import { connectorsSharingTunnel } from '../../shared/tunnel-ids.js';
 
 /** Contract checked against OpenAI Codex 634ebc1865c6ac840ed3ba118f040d527bf4b55d,
@@ -42,15 +43,15 @@ function sharedTunnelConnectors(surface: SurfaceId): SurfaceId[] {
  * sends calls to either, so a script written for Core can run on Plugins half the time.
  */
 export function unknownToolNote(surface: SurfaceId, unknown: readonly string[]): string {
-  const here = surfaceDefinition(surface).connectorName;
+  const here = connectorReference(surface, getConfig().connectorSuffix);
   const named = unknown.map(name => {
     const owner = (Object.keys(SURFACES) as SurfaceId[]).find(id => id !== surface && name !== 'exec' && SURFACES[id].tools.includes(name));
-    return owner ? `${name} (a ${surfaceDefinition(owner).connectorName} tool)` : name;
+    return owner ? `${name} (a ${connectorReference(owner, getConfig().connectorSuffix)} tool)` : name;
   });
   const shared = sharedTunnelConnectors(surface);
   return `UNKNOWN_TOOL_NAMES: this script used tools.${named.join(', tools.')}, which ${here} does not offer; ` +
     'calling one fails with "not a function". ALL_TOOLS lists this connector\'s tools; call other tools through their own connector.' +
-    (shared.length ? ` ${here} shares its Secure Tunnel ID with ${shared.map(id => surfaceDefinition(id).connectorName).join(' and ')}, ` +
+    (shared.length ? ` ${here} shares its Secure Tunnel ID with ${shared.map(id => connectorReference(id, getConfig().connectorSuffix)).join(' and ')}, ` +
       'so ChatGPT sends calls to either connector and a script meant for one can run on the other. Give each connector its own tunnel ID in Setup.' : '');
 }
 

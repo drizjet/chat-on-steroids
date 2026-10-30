@@ -6,6 +6,7 @@ import { Client, ProtocolError, SdkError, SdkErrorCode, StreamableHTTPClientTran
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { getMcpConfigForManifest, vAny } from '@anthropic-ai/mcpb/browser';
 import { getSecret, setSecret, clearSecret } from '../secrets.js';
+import { getConfig } from '../config.js';
 import { readDurable, writeDurableNow } from '../durable.js';
 import { setEnvValue } from '../env.js';
 import { redactCredentialText } from '../redaction.js';
@@ -17,7 +18,8 @@ import { pluginCatalog, reviewedPluginLicense } from './catalog.js';
 import sharp from 'sharp';
 import { pluginExposure } from './exposure.js';
 import { logWarn } from '../logger.js';
-import { SURFACES, surfaceDefinition } from '../mcp/surfaces.js';
+import { SURFACES } from '../mcp/surfaces.js';
+import { connectorName, connectorReference } from '../../shared/connector-names.js';
 
 /**
  * How long a local (stdio) plugin may take to start and answer MCP initialize. A Python server's
@@ -662,7 +664,7 @@ export class PluginManager {
     row.status = 'connecting';
     row.error = undefined;
     this.changed();
-    const client = new Client({ name: 'Chat On Steroids Plugins', version: '1.0.0' });
+    const client = new Client({ name: connectorName('plugins'), version: '1.0.0' });
     let transport: StdioClientTransport | undefined;
     let oauth: PluginOAuth | undefined;
     const retire = () => {
@@ -894,7 +896,7 @@ export class PluginManager {
         reason = 'UNKNOWN_TOOL: This tool name is not in the current Plugins catalog. It may be stale or belong to another connector. Check the current Plugins tool list.';
         // Plugins also owns shared names, notably exec. Case must match the Core declaration.
         if (!SURFACES.plugins.tools.includes(name) && SURFACES.core.tools.includes(name))
-          reason += ` This name belongs to ${surfaceDefinition('core').connectorName}. Discover or select that connector.`;
+          reason += ` This name belongs to ${connectorReference('core', getConfig().connectorSuffix)}. Discover or select that connector.`;
       } else if (row) {
         if (!row.enabled || row.disabledTools.includes(name)) reason = 'PLUGIN_DISABLED: Enable this plugin and tool in Plugins before calling it.';
         else if (row.status === 'needs-auth') reason = 'PLUGIN_NEEDS_AUTH: Sign in to this plugin in Plugins before calling it.';
@@ -938,7 +940,7 @@ export class PluginManager {
       // An SDK request deadline/abort cancels only this call. The transport
       // remains usable; actual disconnects are handled by client.onclose.
       if (error instanceof SdkError && error.code === SdkErrorCode.RequestTimeout)
-        return errorResult('PLUGIN_CALL_TIMEOUT: The call timed out or was cancelled. The operation may have completed; inspect its state before retrying. CoS did not retry.');
+        return errorResult('PLUGIN_CALL_TIMEOUT: The call timed out or was cancelled. The operation may have completed; inspect its state before retrying. The local bridge did not retry.');
       // A failed/ambiguous call must not leave a broken process running idle.
       if (this.live.get(row.id) === live && this.records.includes(row)) {
         const needsAuth = error instanceof PluginNeedsAuth || error instanceof UnauthorizedError;
@@ -947,7 +949,7 @@ export class PluginManager {
         this.changed();
       }
       return errorResult(
-        'PLUGIN_CALL_FAILED: The server failed or disconnected. The operation may have completed; inspect its state before retrying. CoS did not retry.',
+        'PLUGIN_CALL_FAILED: The server failed or disconnected. The operation may have completed; inspect its state before retrying. The local bridge did not retry.',
       );
     } finally { this.release(row, live); }
   }

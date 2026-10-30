@@ -8,7 +8,7 @@ import { announceSessionFinish, sessionFinishDeadline } from '../session/finish.
 import { getConfig } from '../config.js';
 import { createHash } from 'node:crypto';
 import { checkAutomaticSend } from '../send-check.js';
-import { liveConnectorName } from './surfaces.js';
+import { connectorReference } from '../../shared/connector-names.js';
 /**
  * The Core connector: reading, changing and running code on this PC.
  *
@@ -328,7 +328,7 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
         guard('read', async () => {
           if (!caps.read && !caps.browse && !caps.metadata) {
             return fail(
-              'TOOL_DISABLED: read is disabled by the current Chat On Steroids permissions. Ask the user to enable reading in the app.'
+              'TOOL_DISABLED: read is disabled by the current local tool permissions. Ask the user to enable reading in the app.'
             );
           }
           const targets: ReadTarget[] = [];
@@ -465,7 +465,7 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
         guard('view_image', async () => {
           if (!caps.read) {
             return fail(
-              'TOOL_DISABLED: view_image is disabled by the current Chat On Steroids permissions. Ask the user to enable reading in the app.'
+              'TOOL_DISABLED: view_image is disabled by the current local tool permissions. Ask the user to enable reading in the app.'
             );
           }
           const resolved = await resolveIn(ctx.roots, path, { access: 'read', remote: true });
@@ -506,7 +506,7 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
       async ({ path, nth }) =>
         guard('save_image', async () => {
           if (!caps.create) {
-            return fail('TOOL_DISABLED: save_image is disabled by the current Chat On Steroids permissions. Ask the user to enable creating files in the app.');
+            return fail('TOOL_DISABLED: save_image is disabled by the current local tool permissions. Ask the user to enable creating files in the app.');
           }
           const caller = currentCaller();
           const conversationId = caller.conversationId ??
@@ -515,13 +515,13 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
           if (!conversationId) {
             // Name the Core that answered: with one ChatGPT account on several computers, ChatGPT
             // may send a chat's call to another computer's Core, which never sees that chat (#1097).
-            return fail(`${liveConnectorName('core')} could not tell which chat this save_image call came from, ` +
+            return fail(`The ${connectorReference('core', getConfig().connectorSuffix)} could not tell which chat this save_image call came from, ` +
               'so it does not know which image to save. If the chat belongs to another computer, call save_image of that ' +
-              'computer\'s Chat On Steroids Core instead. Otherwise call save_image directly as its own tool call, not from ' +
+              'computer\'s Core connector instead. Otherwise call save_image directly as its own tool call, not from ' +
               'inside a JavaScript or exec step, and try again.');
           }
           if (!imageExportCapable()) {
-            return fail('save_image needs the Chat On Steroids browser extension to be connected and up to date, so the chat\'s page can hand over the image.');
+            return fail('save_image needs the connected browser extension to be connected and up to date, so the chat\'s page can hand over the image.');
           }
           const session = await findSessionByConversation(conversationId);
           const recorded = session ? await readRecentEvents(session.id, 400, { kinds: ['native_image'] }) : [];
@@ -732,7 +732,7 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
         guard('apply_patch', async () => {
           if (!caps.create && !caps.edit && !caps.move && !caps.deleteFile) {
             return fail(
-              'TOOL_DISABLED: apply_patch is disabled by the current Chat On Steroids permissions. Ask the user to enable changing files in the app.'
+              'TOOL_DISABLED: apply_patch is disabled by the current local tool permissions. Ask the user to enable changing files in the app.'
             );
           }
 

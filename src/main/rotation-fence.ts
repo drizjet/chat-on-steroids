@@ -11,7 +11,7 @@ const FENCE_MS = 60_000;
 const fences = new Map<string, { turnId: string; timer: ReturnType<typeof setTimeout> }>();
 
 export const ROTATION_FENCE_REFUSAL =
-  'TURN_CONTINUING: Chat On Steroids is continuing this task in a fresh turn, so this call was not run. ' +
+  'TURN_CONTINUING: The local app is continuing this task in a fresh turn, so this call was not run. ' +
   'Do not retry it in this turn: the next message continues the task, and you can make the call there.';
 
 export function armRotationFence(conversationId: string, turnId: string): void {
