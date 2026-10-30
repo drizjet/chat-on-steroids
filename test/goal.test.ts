@@ -1555,6 +1555,9 @@ describe('when OpenRouter refuses', () => {
       goal.resetGoalStateForTests();
       goal.restoreGoalReplies(saved);
       expect(goal.goalDraftNeedsIntervention(conversationId)).toBe(!retryable);
+      expect(goal.goalOutcomeFor(conversationId)).toEqual(retryable ? null : expect.objectContaining({
+        token: '', stage: 'failed', error: 'http_409', retryable: false,
+      }));
       if (!retryable) {
         // A later accepted assistant identity for the same source turn cannot erase uncertainty.
         await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'assistant-later-same-turn',

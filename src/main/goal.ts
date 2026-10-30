@@ -1399,13 +1399,17 @@ export function goalViewFor(conversationId: string, clientId?: string): GoalDraf
 }
 
 /**
- * The run's outcome for the app window: an acknowledged "goal met" decision, until a newer turn
- * replaces it. goalViewFor() hides it from the page once acted on, but the window must not fall
- * back to "Pursuing goal" for a run that ended (found on Windows, 2026-10-04).
+ * A retained outcome for the app window, including a restored uncertain-provider failure.
+ * This is presentation only: an empty token cannot acknowledge or send a provider request.
  */
 export function goalOutcomeFor(conversationId: string): GoalDraftView | null {
   const draft = drafts.get(conversationId);
   if (draft) return draft.acknowledged && draft.stage === 'no-reply' ? view(draft) : null;
+  const pending = goalReplies.get(conversationId);
+  if (pending?.state === 'pending' && pending.settled409TurnId === pending.turnId) {
+    return { token: '', conversationId, turnId: pending.turnId, stage: 'failed', backend: 'api', model: '',
+      text: '', reply: '', error: 'http_409', retryable: false };
+  }
   // After a restart: the kept decision, with nothing to type and nothing to retry.
   const kept = goalOutcomes.get(conversationId);
   return kept ? { token: '', conversationId, turnId: kept.turnId, stage: 'no-reply', backend: kept.backend, model: kept.model,
