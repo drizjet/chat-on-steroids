@@ -139,14 +139,17 @@
   const LEGACY_APPS = ['TobisComputer'];
   function connectorNameParts(value) {
     if (typeof value !== 'string' || value.length > 80) return null;
-    const match = /^(Local Tools|Chat On Steroids) (Core|Desktop|Plugins)(?: \(([\p{L}\p{N} ._-]{1,32})\))?$/u.exec(value);
-    return match ? { role: match[2], suffix: match[3] || '' } : null;
+    const plain = /^(Local Tools|Chat On Steroids) (Core|Desktop|Plugins)(?: \(([\p{L}\p{N} ._-]{1,32})\))?$/u.exec(value);
+    if (plain) return { role: plain[2], suffix: plain[3] || '' };
+    const underscored = /^(Local_Tools|Chat_On_Steroids)_(Core|Desktop|Plugins)(?:_\(([\p{L}\p{N} ._-]{1,32})\))?$/u.exec(value);
+    return underscored ? { role: underscored[2], suffix: underscored[3] || '' } : null;
   }
   function connectorNamesEquivalent(left, right) {
     if (typeof left !== 'string' || typeof right !== 'string') return false;
     if (left === right) return true;
     const a = connectorNameParts(left), b = connectorNameParts(right);
-    return !!a && !!b && a.role === b.role && a.suffix === b.suffix;
+    return !!a && !!b && a.role === b.role && (a.suffix === b.suffix ||
+      a.suffix.replaceAll(' ', '_') === b.suffix || b.suffix.replaceAll(' ', '_') === a.suffix);
   }
   let OUR_APPS = [...PLAIN_APPS, ...LEGACY_APPS];
   /** Takes the names an ask carries: three exact role names, in core/desktop/plugins order. */

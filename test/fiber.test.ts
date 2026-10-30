@@ -694,6 +694,29 @@ describe('reading a row out of the page', () => {
     expect(rows[0]).toMatchObject({ own: ours });
   });
 
+  it.each([
+    ['legacy underscore spelling for this neutral Core', ['Local Tools Core (Windows)', 'Local Tools Desktop (Windows)', 'Local Tools Plugins (Windows)'],
+      'Chat_On_Steroids_Core_(Windows)', true],
+    ['neutral underscore spelling for this legacy Core', ['Chat On Steroids Core (Windows)', 'Chat On Steroids Desktop (Windows)', 'Chat On Steroids Plugins (Windows)'],
+      'Local_Tools_Core_(Windows)', true],
+    ['legacy underscore spelling for a multiword machine suffix', ['Local Tools Core (Windows 11)', 'Local Tools Desktop (Windows 11)', 'Local Tools Plugins (Windows 11)'],
+      'Chat_On_Steroids_Core_(Windows_11)', true],
+    ['legacy underscore spelling for another machine', ['Local Tools Core (Windows)', 'Local Tools Desktop (Windows)', 'Local Tools Plugins (Windows)'],
+      'Chat_On_Steroids_Core_(Mac)', false],
+    ['legacy underscore spelling for another multiword machine', ['Local Tools Core (Windows 11)', 'Local Tools Desktop (Windows 11)', 'Local Tools Plugins (Windows 11)'],
+      'Chat_On_Steroids_Core_(Windows_12)', false],
+    ['an overlong underscore suffix', ['Local Tools Core (Windows)', 'Local Tools Desktop (Windows)', 'Local Tools Plugins (Windows)'],
+      'Chat_On_Steroids_Core_(' + 'W'.repeat(33) + ')', false],
+    ['legacy underscore spelling with reversed configured roles', ['Local Tools Desktop (Windows)', 'Local Tools Core (Windows)', 'Local Tools Plugins (Windows)'],
+      'Chat_On_Steroids_Core_(Windows)', false],
+    ['a lookalike underscore spelling', ['Local Tools Core (Windows)', 'Local Tools Desktop (Windows)', 'Local Tools Plugins (Windows)'],
+      'Chat_On_Steroids_Core_Backup_(Windows)', false]
+  ])('reads Fiber rows for %s without broadening identity matching', async (_case, apps, app, ours) => {
+    const messages = [request('underscore-ask', 'read_file', { app }), answer('underscore-result', 'underscore-ask', 'read_file', app)];
+    const { rows } = await scan([rowInTurn(messages, messages)], [{ id: 'underscore-turn', messages }], false, apps);
+    expect(rows[0]).toMatchObject({ own: ours });
+  });
+
   it('rejects a foreign App ID even when its name is a legacy alias', async () => {
     const app = 'Chat On Steroids Core (Windows)';
     const messages = [request('alias-foreign-ask', 'read_file', { app }), answer('alias-foreign-result', 'alias-foreign-ask', 'read_file', app)];
