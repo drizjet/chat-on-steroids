@@ -26,7 +26,48 @@ it('preserves the entire Unicode prompt and literal boundary-like user text acro
       expect(api.userPromptText(framed)).toBe(task);
       expect(prependUserPrompt(framed, instructions)).toBe(framed);
     }
-    for (const text of [authored, sent.slice(0, 80), sent.replace('COS_CONTEXT:', 'COS_CONTEXT:9')]) {
+    for (const text of [authored, sent.slice(0, 80), sent.replace('LOCAL_TOOL_CONTEXT:', 'LOCAL_TOOL_CONTEXT:9')]) {
+      expect(userPromptText(text)).toBeNull();
+      expect(api.userPromptText(text)).toBeNull();
+    }
+  } finally { page.window.close(); }
+});
+
+it('emits the neutral context frame with a UTF-16 length and reads both current and legacy families', () => {
+  const page = new JSDOM('', { runScripts: 'outside-only' });
+  try {
+    page.window.eval(readFileSync('extension/chatgpt-dom.js', 'utf8'));
+    const api = (page.window as any).CLF_DOM;
+    const instructions = 'Rules for 🐱 and 😀';
+    const authored = 'Keep [[/COS_CONTEXT]] and [[/LOCAL_TOOL_CONTEXT]] as my literal text.  ';
+    const sent = prependUserPrompt(authored, instructions);
+    const legacy = `[[COS_CONTEXT:${instructions.length}]]\n${instructions}\n[[/COS_CONTEXT]]\n\n${authored}`;
+    const escapedLegacy = legacy.replace(/([!-/:-@[-`{-~])/g, '\\$1').replace(/\n/g, '\\\n');
+
+    expect(Array.from(instructions).length).toBeLessThan(instructions.length);
+    expect(sent).toBe(`[[LOCAL_TOOL_CONTEXT:${instructions.length}]]\n${instructions}\n[[/LOCAL_TOOL_CONTEXT]]\n\n${authored}`);
+    for (const read of [userPromptText, api.userPromptText]) {
+      expect(read(sent)).toBe(authored);
+      expect(read(legacy)).toBe(authored);
+      expect(read(escapedLegacy)).toBe(authored);
+    }
+  } finally { page.window.close(); }
+});
+
+it('fails closed for malformed and mixed-family context frames', () => {
+  const page = new JSDOM('', { runScripts: 'outside-only' });
+  try {
+    page.window.eval(readFileSync('extension/chatgpt-dom.js', 'utf8'));
+    const api = (page.window as any).CLF_DOM;
+    const instructions = 'Private setup 🐱';
+    const authored = 'Keep this entire message literal.';
+    const invalid = [
+      `[[LOCAL_TOOL_CONTEXT:${instructions.length}]]\n${instructions}\n[[/COS_CONTEXT]]\n\n${authored}`,
+      `[[COS_CONTEXT:${instructions.length}]]\n${instructions}\n[[/LOCAL_TOOL_CONTEXT]]\n\n${authored}`,
+      `[[LOCAL_TOOL_CONTEXT:${instructions.length + 1}]]\n${instructions}\n[[/LOCAL_TOOL_CONTEXT]]\n\n${authored}`,
+      `[[COS_CONTEXT:${instructions.length}]]\n${instructions}\n\n${authored}`,
+    ];
+    for (const text of invalid) {
       expect(userPromptText(text)).toBeNull();
       expect(api.userPromptText(text)).toBeNull();
     }
@@ -117,7 +158,7 @@ it('hides a provider-prefixed blank paragraph using exact source, retaining stri
     expect(api.messages()[0].text).toBe(recorded);
     expect(api.userPromptText(source)).toBeNull();
     expect(userPromptText(source)).toBeNull();
-    for (const invalid of [source.replace('COS_CONTEXT:', 'COS_CONTEXT:9'), source.slice(0, 70), '  Ordinary request\n[[/COS_CONTEXT]]']) {
+    for (const invalid of [source.replace('LOCAL_TOOL_CONTEXT:', 'LOCAL_TOOL_CONTEXT:9'), source.slice(0, 70), '  Ordinary request\n[[/COS_CONTEXT]]']) {
       source = invalid;
       api.presentUserPrompts(() => source);
       expect(raw.hasAttribute('data-clf-prompt-hidden')).toBe(false);

@@ -1,7 +1,7 @@
 import type { SessionEvent, SessionSummary } from '../../shared/session.js';
 import { userPromptText } from '../../shared/user-prompt.js';
 
-const contextPrefix = /^\s*(?:\[\[CLF-(?:HANDOFF|RESUME):[A-Za-z0-9_-]{16,64}\]\]\s*)?\[\[COS_CONTEXT:\d{1,6}\]\]/;
+const contextPrefix = /^\s*(?:\[\[CLF-(?:HANDOFF|RESUME):[A-Za-z0-9_-]{16,64}\]\]\s*)?\[\[(?:LOCAL_TOOL_CONTEXT|COS_CONTEXT):\d{1,6}\]\]/;
 
 const TITLE_MAX = 80;
 

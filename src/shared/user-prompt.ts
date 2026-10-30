@@ -6,8 +6,8 @@ const continuation = (text: string): string => /^\[\[CLF-(?:HANDOFF|RESUME):[A-Z
  *
  * ChatGPT's editor treats what it is given as Markdown source and escapes it on readback: a
  * backslash before ASCII punctuation, and a backslash before a newline for a hard line break.
- * The frame is punctuation and newlines almost entirely, so an escaped readback matches none of
- * it — and the declared instruction length stops matching too, because escaping adds characters.
+ * The frame markers use punctuation and newlines, so an escaped readback matches neither form
+ * — and the declared instruction length stops matching too, because escaping adds characters.
  *
  * Measured from a page readback in issue #374: `[[COS_CONTEXT:45]]` came back as
  * `\[\[COS\_CONTEXT\:45\]\]\` and the closing boundary as `\[\[/COS\_CONTEXT\]\]\`.
@@ -29,10 +29,10 @@ function asTyped(text: string): string {
 
 function readFrame(text: string): string | null {
   const identity = continuation(text);
-  const header = /^\[\[COS_CONTEXT:(\d{1,6})\]\]\n/.exec(text.slice(identity.length));
+  const header = /^\[\[(LOCAL_TOOL_CONTEXT|COS_CONTEXT):(\d{1,6})\]\]\n/.exec(text.slice(identity.length));
   if (!header) return null;
-  const end = identity.length + header[0].length + Number(header[1]);
-  const boundary = '\n[[/COS_CONTEXT]]\n\n';
+  const end = identity.length + header[0].length + Number(header[2]);
+  const boundary = `\n[[/${header[1]}]]\n\n`;
   return text.startsWith(boundary, end) ? identity + text.slice(end + boundary.length) : null;
 }
 
@@ -51,5 +51,5 @@ export function prependUserPrompt(text: string, instructions: string): string {
   instructions = instructions.replace(/\r\n?/g, '\n');
   const authored = userPromptText(text) ?? text;
   const identity = continuation(authored);
-  return `${identity}[[COS_CONTEXT:${instructions.length}]]\n${instructions}\n[[/COS_CONTEXT]]\n\n${authored.slice(identity.length)}`;
+  return `${identity}[[LOCAL_TOOL_CONTEXT:${instructions.length}]]\n${instructions}\n[[/LOCAL_TOOL_CONTEXT]]\n\n${authored.slice(identity.length)}`;
 }

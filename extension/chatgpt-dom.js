@@ -113,18 +113,18 @@ var CLF_DOM = (() => {
   const promptContinuation = value => /^\[\[CLF-(?:HANDOFF|RESUME):[A-Za-z0-9_-]{16,64}\]\]\n\n/.exec(value)?.[0] ?? '';
   // The composer treats what it is given as Markdown source and escapes it on readback: a
   // backslash before ASCII punctuation, and one before a newline for a hard line break. The
-  // frame is punctuation and newlines almost entirely, so an escaped readback matches none of
-  // it — and the declared length stops matching too, because escaping adds characters. Read
+  // frame markers use punctuation and newlines, so an escaped readback matches neither form
+  // — and the declared length stops matching too, because escaping adds characters. Read
   // exactly first, as everywhere else; only a frame that cannot be read as sent is read as one
   // the page escaped. It also writes an indented line's first space as `&#x20;` (#821).
   // Keep in sync with asTyped() in shared/user-prompt.ts.
   const promptAsTyped = value => value.replace(/\\\n/g, '\n').replace(/\\([!-/:-@[-`{-~])/g, '$1').replace(/(^|\n)&#x20;/g, '$1 ');
   function readPromptFrame(value) {
     const identity = promptContinuation(value);
-    const header = /^\[\[COS_CONTEXT:(\d{1,6})\]\]\n/.exec(value.slice(identity.length));
+    const header = /^\[\[(LOCAL_TOOL_CONTEXT|COS_CONTEXT):(\d{1,6})\]\]\n/.exec(value.slice(identity.length));
     if (!header) return null;
-    const end = identity.length + header[0].length + Number(header[1]);
-    const boundary = '\n[[/COS_CONTEXT]]\n\n';
+    const end = identity.length + header[0].length + Number(header[2]);
+    const boundary = `\n[[/${header[1]}]]\n\n`;
     return value.startsWith(boundary, end) ? identity + value.slice(end + boundary.length) : null;
   }
   function userPromptText(value) {

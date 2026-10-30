@@ -460,9 +460,10 @@ permission decision alongside a cached schema.
 MCP initialize advertises `instructions`; successful initialize does not prove the host showed
 all of them to the model. Only the first normal message of a new chat and the first bootstrap
 of a newly spawned worker use `session/prompt.ts` to freeze the complete current Core instructions
-plus the explicitly linked project directory and its root `AGENTS.md` inside the existing
-`COS_CONTEXT` frame. The directory and default-workdir guidance remain present when AGENTS.md
-is absent, empty or reading is disabled; no file content is read when read permission is off.
+plus the explicitly linked project directory and its root `AGENTS.md` inside the
+`LOCAL_TOOL_CONTEXT` frame; legacy `COS_CONTEXT` frames remain readable. The directory and
+default-workdir guidance remain present when AGENTS.md is absent, empty or reading is disabled;
+no file content is read when read permission is off.
 The opening outbox input / new-worker command owns this eligibility; no history scan or extra
 sent flag decides it. Existing-chat messages, Goal/Loop continuations, plan checkpoints, worker
 revivals, compaction requests and resumed-chat bootstraps receive no appended setup block.
@@ -3698,10 +3699,12 @@ generic timeout text is not proof of non-delivery and cannot authorize another S
 Continuation readback accepts one layer of Markdown escaping on ASCII punctuation, never
 escapes on letters/digits. The same fallback turns a line-opening `&#x20;` back into a space:
 the page writes an indented line's first space that way (#821). An `&#x20;` inside a line
-stays literal. The `COS_CONTEXT` frame readers (`shared/user-prompt.ts`, `chatgpt-dom.js`)
-follow the same order: exact first, then this one layer. Main/store/renderer and the unbundled content script must agree on
-the marker and preserve its exact removable span. Match an escaped marker separately from
-the brief before considering a fully escaped rendering, preserving literal path/glob backslashes.
+stays literal. The `LOCAL_TOOL_CONTEXT` frame readers (`shared/user-prompt.ts`, `chatgpt-dom.js`)
+also accept legacy `COS_CONTEXT` frames and follow the same order: exact first, then this one
+layer. Main/store/renderer and the unbundled content script must agree on the current marker,
+accept both frame families and preserve each exact removable span. Match an escaped marker
+separately from the brief before considering a fully escaped rendering, preserving literal
+path/glob backslashes.
 Bootstrap receipt fallback remains restricted to app-owned opening messages and retains native
 message/document/epoch proof. Ordinary submitted-user receipts do not gain escape normalization.
 

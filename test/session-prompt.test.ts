@@ -14,8 +14,8 @@ let directory: string;
  * The frame as ChatGPT's composer hands it back.
  *
  * The editor treats what it is given as Markdown source and escapes it on readback — a
- * backslash before ASCII punctuation, and one before a newline for a hard line break. The frame
- * is punctuation and newlines almost entirely, so an escaped readback matched none of it, and
+ * backslash before ASCII punctuation, and one before a newline for a hard line break. Its frame
+ * markers contain punctuation and newlines, so an escaped readback matched neither form, and
  * the declared instruction length stopped matching too because escaping adds characters.
  *
  * Reported as #374 with a screenshot of both halves of the consequence: the app showed the
@@ -30,7 +30,7 @@ it('reads a frame the page escaped, and keeps an authored backslash literal', ()
 
   // Exactly what the composer does: every ASCII punctuation mark and every newline.
   const escaped = framed.replace(/([!-/:-@[-`{-~])/g, '\\$1').replace(/\n/g, '\\\n');
-  expect(escaped).toContain('\\[\\[COS\\_CONTEXT\\:');
+  expect(escaped).toContain('\\[\\[LOCAL\\_TOOL\\_CONTEXT\\:');
   expect(userPromptText(escaped)).toBe('write me a plugin\n\nsecond line');
 
   // The tolerant read is a second attempt, never the first: a prompt that really contains a

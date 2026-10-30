@@ -36,6 +36,14 @@ describe('a chat named after its first message', () => {
     expect(userTitle(words.join(' '))).not.toMatch(/[,;:–-]…$/);
   });
 
+  it.each(['LOCAL_TOOL_CONTEXT', 'COS_CONTEXT'])('uses the request, not %s setup, as the title', family => {
+    const instructions = 'Private setup';
+    const authored = 'Review the parser';
+    const framed = `[[${family}:${instructions.length}]]\n${instructions}\n[[/${family}]]\n\n${authored}`;
+    expect(userTitle(framed)).toBe(authored);
+    expect(userTitle(`[[${family}:14]]\n${instructions}`)).toBe('');
+  });
+
   it('still recognises such a title as made from the message, so ChatGPT\'s own name can replace it', () => {
     const text = 'Release check 2.1.43 mid-turn compaction D, harmless. Use the app named Chat On Steroids Core for every step.';
     const message = { kind: 'user_message', seq: 1, origin: 1, time: 1, message: { text, chars: text.length, truncated: false } } as never;
