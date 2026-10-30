@@ -4073,10 +4073,12 @@ a provider attempt and a browser send are five different facts.
 
 An API HTTP 409 is a settled failure: a compatible endpoint uses that conflict response when
 generation may already have been accepted. The failed draft remains visible and retains the
-same-turn token after page acknowledgement, so the automatic loop cannot start another draft
-for that turn. Ordinary retryable responses such as HTTP 503 retain their existing behavior.
-This application fence complements the adapter's durable accepted/uncertain request identities;
-it does not authorize replaying an uncertain provider job.
+exact source-turn fence after page acknowledgement. The existing durable Goal reply obligation
+stores only that turn ID, so app restart does not make recovery or /goal/draft eligible again
+for the uncertain source. A deliberate user rearm clears that marker for the same source, and
+a newer accepted source replaces it. Ordinary retryable responses such as HTTP 503 retain their
+existing behavior. This application fence complements the adapter's durable accepted/uncertain
+request identities; it does not authorize replaying an uncertain provider job.
 
 ### Modes, controls and boundaries
 

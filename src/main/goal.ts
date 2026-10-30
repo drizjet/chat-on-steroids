@@ -412,6 +412,8 @@ function notifyGoalChange(): void { for (const listener of goalListeners) listen
 interface GoalReplyObligation {
   /** Only the deliberate user activation setter may grant this exemption. */
   explicitActivation?: true;
+  /** HTTP 409 may mean this exact source turn was already accepted by the provider. */
+  settled409TurnId?: string;
   /** Exact source turn captured before its silence grant retired. Pro also requires opt-in. */
   silenceSourceTurnId?: string;
   silencePro?: boolean;
@@ -517,6 +519,8 @@ export function restoreGoalReplies(snapshot: GoalRepliesSnapshot | null): void {
         : Number.isSafeInteger(raw.pickupAttempts) && raw.pickupAttempts! >= BROWSER_PICKUP_MAX_ATTEMPTS
           ? { pickupStoppedAt: raw.acceptedAt } : {}),
       ...(raw.explicitActivation === true ? { explicitActivation: true } : {}),
+      ...(typeof raw.settled409TurnId === 'string' && raw.settled409TurnId.slice(0, 200) === String(raw.turnId).slice(0, 200)
+        ? { settled409TurnId: raw.settled409TurnId.slice(0, 200) } : {}),
       eventSeq: raw.eventSeq,
       acceptedAt: raw.acceptedAt,
       state: raw.state
@@ -554,9 +558,26 @@ export function goalDraftBusy(conversationId: string): boolean {
 
 /** Reloading the source cannot repair a settled settings/transport refusal. */
 export function goalDraftNeedsIntervention(conversationId: string): boolean {
+  const reply = goalReplies.get(conversationId);
+  if (reply && reply.settled409TurnId === reply.turnId) return true;
   const draft = drafts.get(conversationId);
-  return draft?.stage === 'failed' && draft.turnId === goalReplies.get(conversationId)?.turnId &&
+  return draft?.stage === 'failed' && draft.turnId === reply?.turnId &&
     !retryableGoalFailure(draft.error ?? '');
+}
+
+async function markGoalReplyHttp409(conversationId: string, turnId: string): Promise<void> {
+  const reply = goalReplies.get(conversationId);
+  if (!reply || reply.turnId !== turnId || reply.settled409TurnId === turnId) return;
+  // Publish the source-scoped fence before the failed draft can be acknowledged or recovered.
+  // Keeping it in the existing obligation also survives draft-memory loss on process restart.
+  reply.settled409TurnId = turnId;
+  try {
+    await writeDurableNow(GOAL_REPLIES_STATE, snapshotGoalReplies());
+  } catch {
+    // The in-memory fence remains closed and the durable writer retains this generation for
+    // retry. Never turn an uncertain provider outcome back into a retryable draft.
+    persistGoalRepliesSoon();
+  }
 }
 
 export function goalPendingReplyFor(
@@ -713,6 +734,8 @@ export async function acceptGoalReplyNow(input: {
     ...(input.silenceSourceTurnId ? { silenceSourceTurnId: input.silenceSourceTurnId.slice(0, 200) } : {}),
     ...(input.silencePro ? { silencePro: true } : {}),
     ...(input.listenUntil ? { listenUntil: input.listenUntil } : {}),
+    ...(current?.turnId === input.turnId && current.settled409TurnId === input.turnId
+      ? { settled409TurnId: input.turnId } : {}),
     ...(provisionalUpgrade && current?.pickupAttempts !== undefined ? { pickupAttempts: current.pickupAttempts } : {}),
     ...(provisionalUpgrade && current?.pickupNextAt ? { pickupNextAt: current.pickupNextAt } : {}),
     ...(provisionalUpgrade && current?.pickupStoppedAt ? { pickupStoppedAt: current.pickupStoppedAt } : {}),
@@ -1549,7 +1572,10 @@ export async function setGoalReplyActiveNow(conversationId: string, active: bool
   const previous = { ...before };
   before.state = active ? 'pending' : 'handled';
   // Re-arming the same stable reply cannot refund its shared source-turn recovery budget.
-  if (active) before.acceptedAt = Math.max(Date.now(), previous.acceptedAt + 1);
+  if (active) {
+    before.acceptedAt = Math.max(Date.now(), previous.acceptedAt + 1);
+    delete before.settled409TurnId;
+  }
   if (active) before.explicitActivation = true;
   const acceptedAt = before.acceptedAt;
   try {
@@ -1689,6 +1715,7 @@ export function startGoalDraft(input: StartGoalDraftInput): GoalDraftView {
   }
   const settings = getConfig().goal;
   const backend = goalBackendFor(goalDrivingMode(input.conversationId));
+  const settled409 = goalReplies.get(input.conversationId)?.settled409TurnId === input.turnId;
   const draft: GoalDraft = {
     token: `goal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
     conversationId: input.conversationId,
@@ -1703,13 +1730,13 @@ export function startGoalDraft(input: StartGoalDraftInput): GoalDraftView {
     objective: goalObjectiveFor(input.conversationId),
     clientId,
     turnId: input.turnId,
-    stage: 'sending',
+    stage: settled409 ? 'failed' : 'sending',
     model: backend === 'chatgpt' ? helperModelLabel() : settings.model,
     text: '',
     reply: '',
-    error: null,
+    error: settled409 ? 'http_409' : null,
     startedAt: Date.now(),
-    settledAt: 0,
+    settledAt: settled409 ? Date.now() : 0,
     acknowledged: false,
     work: null,
     abort: null
@@ -1725,6 +1752,10 @@ export function startGoalDraft(input: StartGoalDraftInput): GoalDraftView {
 export function beginGoalDraft(conversationId: string, token: string): boolean {
   const draft = drafts.get(conversationId);
   if (!draft || draft.token !== token || draft.acknowledged || draft.work) return false;
+  if (goalReplies.get(conversationId)?.settled409TurnId === draft.turnId) {
+    if (draft.stage !== 'failed') settle(draft, 'failed', 'http_409');
+    return false;
+  }
   draft.work = run(draft).catch((err: Error) => {
     settle(draft, 'failed', `goal_failed: ${err.message}`);
   });
@@ -2106,6 +2137,10 @@ async function run(draft: GoalDraft): Promise<void> {
     // Logged like the exception path below. Ten rate limits in a row on 2026-09-02 left no
     // trace in app.log because a provider's refusal is an answer, not an exception.
     if (decision.action === 'http' || decision.action === 'invalid') {
+      if (draft.backend === 'api' && /^http_409(?:$|:)/.test(decision.error)) {
+        await markGoalReplyHttp409(draft.conversationId, draft.turnId);
+        if (draft.acknowledged || drafts.get(draft.conversationId) !== draft) return;
+      }
       logWarn(`goal: draft for ${draft.conversationId} failed — ${decision.error}`);
       return settle(draft, 'failed', decision.error);
     }

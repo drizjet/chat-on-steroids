@@ -14,6 +14,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { recordLoopMcpProof } from './goal-mcp-proof.js';
 import * as prompts from '../src/shared/goal.js';
+import type { GoalRepliesSnapshot } from '../src/main/goal.js';
 
 vi.mock('electron', () => ({
   app: { getPath: () => '', getVersion: () => '0.0.0' },
@@ -27,7 +28,7 @@ vi.mock('electron', () => ({
 
 const { defaultConfig, initConfigPath, saveConfig } = await import('../src/main/config.js');
 const { initSecretsPath, setSecret } = await import('../src/main/secrets.js');
-const { initDurableStore } = await import('../src/main/durable.js');
+const { initDurableStore, readDurable } = await import('../src/main/durable.js');
 const { takeAutomaticReply } = await import('../src/main/session/automatic-replies.js');
 const { appendEvent, createSession, observeSessionModel, initSessionStore, resetSessionStoreForTests, readRecentEvents } = await import(
   '../src/main/session/store.js'
@@ -1523,6 +1524,8 @@ describe('when OpenRouter refuses', () => {
     'keeps HTTP %s retryability and the acknowledged turn fence consistent', async (status, retryable) => {
       const conversationId = `c-http-fence-${status}`;
       const sessionId = await seed(conversationId);
+      await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'turn:same-turn',
+        turnId: 'same-turn', eventSeq: 0, blocked: false });
       let attempts = 0;
       globalThis.fetch = (async () => {
         attempts += 1;
@@ -1537,12 +1540,88 @@ describe('when OpenRouter refuses', () => {
       expect(failure).toMatchObject({ stage: 'failed', retryable });
       expect(failure.error).not.toContain('PRIVATE_FAILURE_BODY');
       expect(goal.ackGoalDraft(conversationId, failure.token)).toBe(true);
-      const next = goal.startGoalDraft({ sessionId, conversationId, turnId: 'same-turn' });
-      expect(next.token === first.token).toBe(!retryable);
+      await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'assistant-http-' + status,
+        turnId: 'same-turn', eventSeq: 99, blocked: false });
+      const sameProcessNext = goal.startGoalDraft({ sessionId, conversationId, turnId: 'same-turn' });
+      expect(sameProcessNext.token === first.token).toBe(!retryable);
       await settled(conversationId);
       expect(attempts).toBe(retryable ? 2 : 1);
+      if (retryable) goal.ackGoalDraft(conversationId, sameProcessNext.token);
+
+      const saved = await readDurable<GoalRepliesSnapshot>(goal.GOAL_REPLIES_STATE);
+      expect(saved).not.toBeNull();
+      expect(saved!.replies[0]?.settled409TurnId).toBe(retryable ? undefined : 'same-turn');
+      expect(JSON.stringify(saved)).not.toContain('PRIVATE_FAILURE_BODY');
+      goal.resetGoalStateForTests();
+      goal.restoreGoalReplies(saved);
+      expect(goal.goalDraftNeedsIntervention(conversationId)).toBe(!retryable);
+      if (!retryable) {
+        // A later accepted assistant identity for the same source turn cannot erase uncertainty.
+        await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'assistant-later-same-turn',
+          turnId: 'same-turn', eventSeq: 100, blocked: false });
+        expect(goal.goalDraftNeedsIntervention(conversationId)).toBe(true);
+      }
+
+      const afterRestore = goal.startGoalDraft({ sessionId, conversationId, turnId: 'same-turn', deferStart: !retryable });
+      if (retryable) expect((await settled(conversationId)).retryable).toBe(true);
+      else {
+        expect(afterRestore).toMatchObject({ stage: 'failed', retryable: false });
+        // `/goal/draft` reserves before it re-commits the obligation, then calls begin.
+        // A restored settled marker must refuse that boundary without a provider request.
+        await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'turn:same-turn',
+          turnId: 'same-turn', eventSeq: 0, blocked: false });
+        expect(goal.beginGoalDraft(conversationId, afterRestore.token)).toBe(false);
+      }
+      expect(attempts).toBe(retryable ? 3 : 1);
     }
   );
+
+  it('allows deliberate rearm of the exact source after a restored HTTP 409 fence', async () => {
+    const conversationId = 'c-http-409-rearm';
+    const sessionId = await seed(conversationId);
+    await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'assistant-http-409-rearm',
+      turnId: 'same-turn', eventSeq: 99, blocked: false });
+    let attempts = 0;
+    globalThis.fetch = (async () => {
+      attempts += 1;
+      return Response.json({ error: { type: 'generation_outcome_uncertain', message: 'PRIVATE_REARM_BODY' } }, { status: 409 });
+    }) as never;
+    goal.startGoalDraft({ sessionId, conversationId, turnId: 'same-turn' });
+    const failure = await settled(conversationId);
+    expect(failure.retryable).toBe(false);
+    expect(goal.ackGoalDraft(conversationId, failure.token)).toBe(true);
+
+    const saved = await readDurable<GoalRepliesSnapshot>(goal.GOAL_REPLIES_STATE);
+    expect(saved).not.toBeNull();
+    goal.resetGoalStateForTests();
+    goal.restoreGoalReplies(saved);
+    expect(goal.goalDraftNeedsIntervention(conversationId)).toBe(true);
+    expect(await goal.setGoalReplyActiveNow(conversationId, true)).toBe(true);
+    expect(goal.goalDraftNeedsIntervention(conversationId)).toBe(false);
+
+    globalThis.fetch = (async () => {
+      attempts += 1;
+      return Response.json({ error: { type: 'worker_busy', message: 'PRIVATE_REARM_RETRY_BODY' } }, { status: 503 });
+    }) as never;
+    const rearmed = goal.startGoalDraft({ sessionId, conversationId, turnId: 'same-turn' });
+    expect(rearmed.stage).toBe('sending');
+    const rearmFailure = await settled(conversationId);
+    expect(rearmFailure.retryable).toBe(true);
+    expect(attempts).toBe(2);
+    expect(goal.ackGoalDraft(conversationId, rearmFailure.token)).toBe(true);
+
+    await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'assistant-new-source',
+      turnId: 'new-source', eventSeq: 100, blocked: false });
+    expect(goal.goalDraftNeedsIntervention(conversationId)).toBe(false);
+    globalThis.fetch = (async () => {
+      attempts += 1;
+      return decision('continue', 'a correction for the newer source');
+    }) as never;
+    const newer = goal.startGoalDraft({ sessionId, conversationId, turnId: 'new-source' });
+    expect((await settled(conversationId)).stage).toBe('ready');
+    expect(newer.turnId).toBe('new-source');
+    expect(attempts).toBe(3);
+  });
 
   /** The status codes a person can act on, said in words rather than as a number. */
   it('names the reason, and never quotes the key back', async () => {
