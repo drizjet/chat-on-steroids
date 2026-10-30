@@ -1576,6 +1576,37 @@ describe('when OpenRouter refuses', () => {
     }
   );
 
+  it('does not let a late HTTP 409 fence a deliberate same-turn rearm', async () => {
+    const conversationId = 'c-http-409-late-rearm';
+    const sessionId = await seed(conversationId);
+    await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'assistant-before-rearm',
+      turnId: 'same-turn', eventSeq: 99, blocked: false });
+    const store = await import('../src/main/session/store.js');
+    const originalGetSession = store.getSession;
+    let rearmed = false;
+    let read: ReturnType<typeof vi.spyOn> | undefined;
+    globalThis.fetch = (async () => {
+      // The provider result passed the first current-draft check. The finish-only
+      // check then awaits the session owner before failure classification resumes.
+      read = vi.spyOn(store, 'getSession').mockImplementationOnce(async id => {
+        rearmed = await goal.setGoalReplyActiveNow(conversationId, true);
+        return originalGetSession(id);
+      });
+      return Response.json({ error: { type: 'generation_outcome_uncertain' } }, { status: 409 });
+    }) as never;
+    try {
+      goal.startGoalDraft({ sessionId, conversationId, turnId: 'same-turn' });
+      for (let index = 0; index < 100 && !rearmed; index += 1) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(rearmed).toBe(true);
+      expect(goal.goalDraftNeedsIntervention(conversationId)).toBe(false);
+      const saved = await readDurable<GoalRepliesSnapshot>(goal.GOAL_REPLIES_STATE);
+      expect(saved?.replies[0]?.settled409TurnId).toBeUndefined();
+    } finally { read?.mockRestore(); }
+  });
+
   it('allows deliberate rearm of the exact source after a restored HTTP 409 fence', async () => {
     const conversationId = 'c-http-409-rearm';
     const sessionId = await seed(conversationId);

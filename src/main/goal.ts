@@ -565,7 +565,9 @@ export function goalDraftNeedsIntervention(conversationId: string): boolean {
     !retryableGoalFailure(draft.error ?? '');
 }
 
-async function markGoalReplyHttp409(conversationId: string, turnId: string): Promise<void> {
+async function markGoalReplyHttp409(draft: GoalDraft): Promise<void> {
+  if (draft.acknowledged || drafts.get(draft.conversationId) !== draft) return;
+  const { conversationId, turnId } = draft;
   const reply = goalReplies.get(conversationId);
   if (!reply || reply.turnId !== turnId || reply.settled409TurnId === turnId) return;
   // Publish the source-scoped fence before the failed draft can be acknowledged or recovered.
@@ -2138,7 +2140,7 @@ async function run(draft: GoalDraft): Promise<void> {
     // trace in app.log because a provider's refusal is an answer, not an exception.
     if (decision.action === 'http' || decision.action === 'invalid') {
       if (draft.backend === 'api' && /^http_409(?:$|:)/.test(decision.error)) {
-        await markGoalReplyHttp409(draft.conversationId, draft.turnId);
+        await markGoalReplyHttp409(draft);
         if (draft.acknowledged || drafts.get(draft.conversationId) !== draft) return;
       }
       logWarn(`goal: draft for ${draft.conversationId} failed — ${decision.error}`);
