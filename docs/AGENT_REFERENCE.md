@@ -4071,6 +4071,13 @@ it must not invent an unrelated project just to keep generating.
 owns actual delivery. An objective, an enabled mode, an unfinished reply obligation,
 a provider attempt and a browser send are five different facts.
 
+An API HTTP 409 is a settled failure: a compatible endpoint uses that conflict response when
+generation may already have been accepted. The failed draft remains visible and retains the
+same-turn token after page acknowledgement, so the automatic loop cannot start another draft
+for that turn. Ordinary retryable responses such as HTTP 503 retain their existing behavior.
+This application fence complements the adapter's durable accepted/uncertain request identities;
+it does not authorize replaying an uncertain provider job.
+
 ### Modes, controls and boundaries
 
 Per-chat explicit Off defeats an existing objective. Without an explicit override, effective

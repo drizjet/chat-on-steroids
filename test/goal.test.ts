@@ -1519,6 +1519,31 @@ describe('when OpenRouter refuses', () => {
     return session.id;
   };
 
+  it.each([[409, false], [503, true]] as const)(
+    'keeps HTTP %s retryability and the acknowledged turn fence consistent', async (status, retryable) => {
+      const conversationId = `c-http-fence-${status}`;
+      const sessionId = await seed(conversationId);
+      let attempts = 0;
+      globalThis.fetch = (async () => {
+        attempts += 1;
+        return Response.json({ error: {
+          type: status === 409 ? 'generation_outcome_uncertain' : 'worker_busy',
+          retryable,
+          message: 'PRIVATE_FAILURE_BODY must stay out of diagnostics',
+        } }, { status });
+      }) as never;
+      const first = goal.startGoalDraft({ sessionId, conversationId, turnId: 'same-turn' });
+      const failure = await settled(conversationId);
+      expect(failure).toMatchObject({ stage: 'failed', retryable });
+      expect(failure.error).not.toContain('PRIVATE_FAILURE_BODY');
+      expect(goal.ackGoalDraft(conversationId, failure.token)).toBe(true);
+      const next = goal.startGoalDraft({ sessionId, conversationId, turnId: 'same-turn' });
+      expect(next.token === first.token).toBe(!retryable);
+      await settled(conversationId);
+      expect(attempts).toBe(retryable ? 2 : 1);
+    }
+  );
+
   /** The status codes a person can act on, said in words rather than as a number. */
   it('names the reason, and never quotes the key back', async () => {
     const cases: Array<[number, string, string]> = [
