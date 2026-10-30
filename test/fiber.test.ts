@@ -627,7 +627,8 @@ describe('reading a row out of the page', () => {
     });
   });
 
-  it.each(['Chat On Steroids Core', 'Chat On Steroids Desktop', 'Chat On Steroids Plugins', 'Chat On Steroids Backup', 'Gmail'])(
+  it.each(['Local Tools Core', 'Local Tools Desktop', 'Local Tools Plugins', 'Chat On Steroids Core', 'Chat On Steroids Desktop',
+    'Chat On Steroids Plugins', 'Chat On Steroids Backup', 'Gmail'])(
     'keeps result-only metadata scoped to the exact supported connector %s', async app => {
       const result = answer('result-scope', 'unused', 'read', app);
       result.author.name = 'api_tool.call_tool';
@@ -672,6 +673,38 @@ describe('reading a row out of the page', () => {
     const running = request('req-2', 'read_file', { app });
     const { turns } = await scan([], [{ id: 'running-turn', messages: [running] }], false, apps);
     expect(turns[0]!.calls.map(call => call.tool)).toEqual(ours ? ['read_file'] : []);
+  });
+
+  it.each([
+    ['the legacy alias with the same machine suffix', ['Local Tools Core (Windows)', 'Local Tools Desktop (Windows)', 'Local Tools Plugins (Windows)'],
+      'Chat On Steroids Core (Windows)', true],
+    ['the legacy alias with another machine suffix', ['Local Tools Core (Windows)', 'Local Tools Desktop (Windows)', 'Local Tools Plugins (Windows)'],
+      'Chat On Steroids Core (Mac)', false],
+    ['a configured role mismatch', ['Local Tools Desktop (Windows)', 'Local Tools Core (Windows)', 'Local Tools Plugins (Windows)'],
+      'Chat On Steroids Core (Windows)', false],
+    ['a malformed legacy suffix', ['Local Tools Core (Windows)', 'Local Tools Desktop (Windows)', 'Local Tools Plugins (Windows)'],
+      'Chat On Steroids Core (Win/VM)', false],
+    ['a neutral alias for the same machine suffix', ['Chat On Steroids Core (Windows)', 'Chat On Steroids Desktop (Windows)', 'Chat On Steroids Plugins (Windows)'],
+      'Local Tools Core (Windows)', true],
+    ['a lookalike connector name', ['Local Tools Core', 'Local Tools Desktop', 'Local Tools Plugins'],
+      'Local Tools Core Backup', false]
+  ])('matches only an exact role and suffix for %s', async (_case, apps, app, ours) => {
+    const messages = [request('alias-ask', 'read_file', { app }), answer('alias-result', 'alias-ask', 'read_file', app)];
+    const { rows } = await scan([rowInTurn(messages, messages)], [{ id: 'alias-turn', messages }], false, apps);
+    expect(rows[0]).toMatchObject({ own: ours });
+  });
+
+  it('rejects a foreign App ID even when its name is a legacy alias', async () => {
+    const app = 'Chat On Steroids Core (Windows)';
+    const messages = [request('alias-foreign-ask', 'read_file', { app }), answer('alias-foreign-result', 'alias-foreign-ask', 'read_file', app)];
+    const ask = messages[0]!;
+    ask.content!.text = (ask.content!.text as string).replace(LINK, 'link_foreign');
+    (messages[1]!.metadata!.invoked_resource as Record<string, unknown>).resource_uri = '/asdk_app_foreign/link_foreign/read_file';
+    const { rows, turns } = await scan([rowInTurn(messages, messages)], [{ id: 'alias-foreign-turn', messages }], false,
+      ['Local Tools Core (Windows)', 'Local Tools Desktop (Windows)', 'Local Tools Plugins (Windows)'],
+      [{ surface: 'core', appId: ASDK, linkId: LINK, name: 'Local Tools Core (Windows)' }]);
+    expect(rows[0]).toMatchObject({ own: false });
+    expect(turns[0]!.calls).toEqual([]);
   });
 
   it('names six sequential calls in the same chat, each as itself', async () => {

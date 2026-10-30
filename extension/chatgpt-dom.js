@@ -2826,14 +2826,24 @@ var CLF_DOM = (() => {
    * calls run there. Null until the app has said, which keeps the plain names. Every ask to the
    * page-world helper carries them, so it never judges traffic by names it was not told.
    */
-  const PLAIN_CONNECTORS = ['Chat On Steroids Core', 'Chat On Steroids Desktop', 'Chat On Steroids Plugins'];
-  const SUFFIXED_CONNECTOR = /^Chat On Steroids (Core|Desktop|Plugins) \([\p{L}\p{N} ._-]{1,32}\)$/u;
+  const PLAIN_CONNECTORS = ['Local Tools Core', 'Local Tools Desktop', 'Local Tools Plugins'];
+  function connectorNameParts(value) {
+    if (typeof value !== 'string' || value.length > 80) return null;
+    const match = /^(Local Tools|Chat On Steroids) (Core|Desktop|Plugins)(?: \(([\p{L}\p{N} ._-]{1,32})\))?$/u.exec(value);
+    return match ? { role: match[2], suffix: match[3] || '' } : null;
+  }
+  function connectorNamesEquivalent(left, right) {
+    if (typeof left !== 'string' || typeof right !== 'string') return false;
+    if (left === right) return true;
+    const a = connectorNameParts(left), b = connectorNameParts(right);
+    return !!a && !!b && a.role === b.role && a.suffix === b.suffix;
+  }
   let ownConnectors = null;
   function setConnectorNames(names) {
     if (!names || typeof names !== 'object') return false;
     const list = [names.core, names.desktop, names.plugins];
     const words = ['Core', 'Desktop', 'Plugins'];
-    if (!list.every((name, at) => typeof name === 'string' && (name === PLAIN_CONNECTORS[at] || SUFFIXED_CONNECTOR.exec(name)?.[1] === words[at]))) return false;
+    if (!list.every((name, at) => connectorNameParts(name)?.role === words[at])) return false;
     ownConnectors = list;
     return true;
   }
@@ -2855,8 +2865,8 @@ var CLF_DOM = (() => {
   const connectorApps = () => ownApps.map(app => ({ ...app }));
   /** Configured and learned names select one surface; renames never discard its proven IDs. */
   function provenAppsFor(connectorName) {
-    const at = connectorNames().indexOf(connectorName);
-    const surfaces = new Set(ownApps.filter(app => app.name === connectorName).map(app => app.surface));
+    const at = connectorNames().findIndex(name => connectorNamesEquivalent(name, connectorName));
+    const surfaces = new Set(ownApps.filter(app => connectorNamesEquivalent(app.name, connectorName)).map(app => app.surface));
     if (at >= 0) surfaces.add(['core', 'desktop', 'plugins'][at]);
     // A learned name can collide with another surface's learned or configured name.
     // That ambiguity is not permission to fall back to name-only enrollment.
@@ -2867,11 +2877,11 @@ var CLF_DOM = (() => {
   /** This install's three names, or the plain ones while the app has not said. */
   const connectorNames = () => [...(ownConnectors || PLAIN_CONNECTORS)];
   /** The Plugins connector of any computer: it only selects that connector's larger action limits. */
-  const pluginsConnectorName = (name) => name === PLAIN_CONNECTORS[2] || SUFFIXED_CONNECTOR.exec(typeof name === 'string' ? name : '')?.[1] === 'Plugins';
+  const pluginsConnectorName = (name) => connectorNameParts(name)?.role === 'Plugins';
   /** Multi-app Core enrollment: undefined means one/no proven ID; null means ambiguous. */
   function firstEnrollmentAppId(proven, connectorName) {
     if (proven.length <= 1) return undefined;
-    const named = proven.filter(app => app.name === connectorName);
+    const named = proven.filter(app => connectorNamesEquivalent(app.name, connectorName));
     if (named.length !== 1 || ownApps.filter(app => app.appId === named[0].appId).length !== 1) return null;
     return named[0].appId;
   }
@@ -2916,7 +2926,7 @@ var CLF_DOM = (() => {
     // installed list. Otherwise an unbound request could accept a different proven Core ID.
     const target = firstEnrollmentAppId(proven, connectorName);
     return target !== null && (target ? snapshot.appId === target : proven.length
-      ? proven.some(app => app.appId === snapshot.appId) : snapshot.connectorName === connectorName);
+      ? proven.some(app => app.appId === snapshot.appId) : connectorNamesEquivalent(snapshot.connectorName, connectorName));
   }
   function pluginInstalledButtons(connectorName, expectedAppId = null, expectedSurface = null) {
     // Native links name their exact App Id, even when a fresh provider rename has not reached
@@ -2934,7 +2944,7 @@ var CLF_DOM = (() => {
         if (identified.some(app => app.surface !== expectedSurface)) return null;
         proven = identified;
       } else if (proven !== null && (proven.some(app => app.surface !== expectedSurface) ||
-          (!proven.length && connectorNames()[surfaceAt] !== connectorName))) return null;
+          (!proven.length && !connectorNamesEquivalent(connectorNames()[surfaceAt], connectorName)))) return null;
     }
     if (proven === null) return null;
     // A surface can retain several real, still-installed App IDs (for example an older Core,
@@ -2944,12 +2954,12 @@ var CLF_DOM = (() => {
     const namedTargetId = expectedAppId === null ? firstEnrollmentAppId(proven, connectorName) : undefined;
     if (namedTargetId === null) return null;
     const names = [connectorName, ...proven.map(app => app.name).filter(Boolean)];
-    const named = node => names.includes(text(node));
+    const named = node => names.some(name => connectorNamesEquivalent(name, text(node)));
     return safe(() => {
       // The newer shell lists installed plugins on the /settings/plugins-settings page itself.
       if (location.pathname === '/settings/plugins-settings' && !location.hash) {
         const main = document.querySelector('main');
-        if (!main || (!proven.length && !connectorNames().includes(connectorName))) return null;
+        if (!main || (!proven.length && !connectorNames().some(name => connectorNamesEquivalent(name, connectorName)))) return null;
         // Measured 2026-10-11: installed rows became links to exact management pages.
         // Catalog and external links cannot identify an installed connector.
         const rows = [...main.querySelectorAll('button,a[href]')].filter(button => {

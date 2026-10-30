@@ -135,23 +135,33 @@
    * every ask, and only those are ours: the other computer's calls run there, not here. Measured
    * 2026-10-04: the call path, `invocation.server` and `app_name` all carry the name as typed.
    */
-  const PLAIN_APPS = ['Chat On Steroids Core', 'Chat On Steroids Desktop', 'Chat On Steroids Plugins'];
+  const PLAIN_APPS = ['Local Tools Core', 'Local Tools Desktop', 'Local Tools Plugins'];
   const LEGACY_APPS = ['TobisComputer'];
-  const SUFFIXED_APP = /^Chat On Steroids (Core|Desktop|Plugins) \([\p{L}\p{N} ._-]{1,32}\)$/u;
+  function connectorNameParts(value) {
+    if (typeof value !== 'string' || value.length > 80) return null;
+    const match = /^(Local Tools|Chat On Steroids) (Core|Desktop|Plugins)(?: \(([\p{L}\p{N} ._-]{1,32})\))?$/u.exec(value);
+    return match ? { role: match[2], suffix: match[3] || '' } : null;
+  }
+  function connectorNamesEquivalent(left, right) {
+    if (typeof left !== 'string' || typeof right !== 'string') return false;
+    if (left === right) return true;
+    const a = connectorNameParts(left), b = connectorNameParts(right);
+    return !!a && !!b && a.role === b.role && a.suffix === b.suffix;
+  }
   let OUR_APPS = [...PLAIN_APPS, ...LEGACY_APPS];
-  /** Takes the names an ask carries: three "Chat On Steroids …" names, in core/desktop/plugins order. */
+  /** Takes the names an ask carries: three exact role names, in core/desktop/plugins order. */
   function adoptAppNames(names) {
     if (!Array.isArray(names) || names.length !== 3) return;
     const words = ['Core', 'Desktop', 'Plugins'];
     for (let at = 0; at < 3; at++) {
       const name = names[at];
-      if (typeof name !== 'string' || (name !== PLAIN_APPS[at] && SUFFIXED_APP.exec(name)?.[1] !== words[at])) return;
+      if (connectorNameParts(name)?.role !== words[at]) return;
     }
     OUR_APPS = [...names, ...LEGACY_APPS];
   }
   /** The Plugins connector of any computer: it only sets that connector's larger action limits. */
   function pluginsConnectorName(name) {
-    return name === PLAIN_APPS[2] || SUFFIXED_APP.exec(typeof name === 'string' ? name : '')?.[1] === 'Plugins';
+    return connectorNameParts(name)?.role === 'Plugins';
   }
 
   /**
@@ -192,8 +202,8 @@
   }
   /** Which surface a configured or proven name belongs to, or null. */
   function surfaceOfName(name) {
-    for (let at = 0; at < 3; at++) if (OUR_APPS[at] === name) return SURFACES[at];
-    for (let at = 0; at < OUR_APP_IDS.length; at++) if (OUR_APP_IDS[at].name === name) return OUR_APP_IDS[at].surface;
+    for (let at = 0; at < 3; at++) if (connectorNamesEquivalent(OUR_APPS[at], name)) return SURFACES[at];
+    for (let at = 0; at < OUR_APP_IDS.length; at++) if (connectorNamesEquivalent(OUR_APP_IDS[at].name, name)) return OUR_APP_IDS[at].surface;
     return null;
   }
   /**
@@ -229,9 +239,12 @@
   /** Names `mcp-tool-call` steps may carry for ours: configured and proven (spaces may be `_`). */
   function ownServerName(name) {
     if (typeof name !== 'string') return null;
-    const names = [...OUR_APPS];
-    for (let at = 0; at < OUR_APP_IDS.length; at++) if (OUR_APP_IDS[at].name) names.push(OUR_APP_IDS[at].name);
-    return names.find(app => name === app || name === app.replaceAll(' ', '_')) || null;
+    if (LEGACY_APPS.includes(name)) return name;
+    for (let at = 0; at < 3; at++) {
+      if (connectorNamesEquivalent(name, OUR_APPS[at]) || name === OUR_APPS[at].replaceAll(' ', '_')) return OUR_APPS[at];
+    }
+    return OUR_APP_IDS.find(app => app.name &&
+      (name === app.name || name === app.name.replaceAll(' ', '_') || connectorNamesEquivalent(name, app.name)))?.name || null;
   }
   /**
    * The tool path at the very front of a request payload.

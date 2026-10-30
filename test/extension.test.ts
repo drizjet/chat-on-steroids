@@ -1305,6 +1305,23 @@ describe('a chat deleted in ChatGPT', () => {
 });
 
 describe('this install\'s Core app for fresh tabs (#1086)', () => {
+  it('hands a page the neutral Core identity for a fresh tab', async () => {
+    const names = { core: 'Local Tools Core (Windows)', desktop: 'Local Tools Desktop (Windows)', plugins: 'Local Tools Plugins (Windows)' };
+    const ownCoreApp = { appId: 'asdk_app_win2222', name: 'Local Tools Core (Windows)' };
+    const worker = loadWorker({
+      local: new FakeStorageArea({ port: 8765, token: 'paired-token', connectorNames: names, ownCoreApp }),
+      session: new FakeStorageArea(),
+      fetch: async input => {
+        const url = new URL(input);
+        if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+        if (url.pathname === '/commands/redeem') return response(200, { command: { id: 'cmd-neutral', kind: 'resume', text: 'brief', agent: null } });
+        return response(404, {});
+      }
+    });
+    expect(await worker.send({ type: 'redeem', id: 'cmd-neutral', client: 'page-neutral' })).toMatchObject({
+      ok: true, identity: { connectorNames: names, ownCoreApp } });
+  });
+
   it('hands a redeeming page this install\'s Core identity with its command', async () => {
     // A tab the app opened runs its command before its first status reply, so the command
     // carries what the page needs to mention this install's own Core rather than another's.
@@ -6165,6 +6182,9 @@ describe('this install\'s connector names', () => {
   const windows = {
     core: 'Chat On Steroids Core (Windows)', desktop: 'Chat On Steroids Desktop (Windows)', plugins: 'Chat On Steroids Plugins (Windows)'
   };
+  const neutralWindows = {
+    core: 'Local Tools Core (Windows)', desktop: 'Local Tools Desktop (Windows)', plugins: 'Local Tools Plugins (Windows)'
+  };
   const paired = { port: 8765, token: 'paired-token' };
   it('keeps the app\'s proven connector apps across a worker restart, drops malformed ones and hands them to pages', async () => {
     // A connector renamed in ChatGPT keeps its app id (2026-10-11). Pages recognize this install's
@@ -6218,6 +6238,10 @@ describe('this install\'s connector names', () => {
       { ...windows, core: 'Chat On Steroids Backup' },
       { ...windows, core: 'Chat On Steroids Desktop (Windows)' },
       { ...windows, plugins: 'Chat On Steroids Plugins (Win/VM)' },
+      { ...neutralWindows, core: 'Local Tools Backup' },
+      { ...neutralWindows, core: 'Local Tools Desktop (Windows)' },
+      { ...neutralWindows, plugins: 'Local Tools Plugins (Win/VM)' },
+      { ...neutralWindows, plugins: 'Local Tools Plugins (' + 'W'.repeat(33) + ')' },
       'Chat On Steroids Core'
     ]) {
       names = foreign;
@@ -6227,6 +6251,10 @@ describe('this install\'s connector names', () => {
     names = { core: 'Chat On Steroids Core', desktop: 'Chat On Steroids Desktop', plugins: 'Chat On Steroids Plugins' };
     await worker.fireAlarm();
     expect((await worker.send({ type: 'status' }) as any).connectorNames).toEqual(names);
+    names = neutralWindows;
+    await worker.fireAlarm();
+    expect((await worker.send({ type: 'status' }) as any).connectorNames).toEqual(neutralWindows);
+    expect(local.data.connectorNames).toEqual(neutralWindows);
   });
 });
 

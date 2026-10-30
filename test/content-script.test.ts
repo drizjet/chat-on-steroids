@@ -2290,6 +2290,68 @@ describe('desktop input delivery and helper ownership', () => {
   });
 
   it.each([
+    ['the neutral name', [{ name: 'Local Tools Core (Windows)', path: 'app://asdk_app_win2222' }],
+      { path: 'app://asdk_app_win2222', name: 'Local Tools Core (Windows)' }],
+    ['the legacy alias for the same machine', [{ name: 'Chat On Steroids Core (Windows)', path: 'app://asdk_app_win2222' }],
+      { path: 'app://asdk_app_win2222', name: 'Chat On Steroids Core (Windows)' }],
+    ['a legacy name for another machine', [{ name: 'Chat On Steroids Core (Mac)', path: 'app://asdk_app_mac1111' }], null],
+    ['a legacy name for another role', [{ name: 'Chat On Steroids Desktop (Windows)', path: 'app://asdk_app_desktop' }], null],
+    ['a malformed suffix', [{ name: 'Chat On Steroids Core (Win/VM)', path: 'app://asdk_app_bad' }], null],
+    ['two equivalent alias targets', [
+      { name: 'Local Tools Core (Windows)', path: 'app://asdk_app_neutral' },
+      { name: 'Chat On Steroids Core (Windows)', path: 'app://asdk_app_legacy' }
+    ], null]
+  ] as const)('mentions a no-ID neutral Core when the page lists %s', async (_case, candidates, expected) => {
+    live = await harness('https://chatgpt.com/?cos-input=' + inputId, {
+      status: () => ({ connected: true, paired: true, port: 8765, pending: 0, connectorNames: {
+        core: 'Local Tools Core (Windows)', desktop: 'Local Tools Desktop (Windows)', plugins: 'Local Tools Plugins (Windows)' } }),
+      desktop_input: message => ({ ok: true, data: message.authorize || message.ack ? { ok: true } : { input: claimed() } })
+    });
+    await settle();
+    live.window.dispatchEvent(new live.window.MessageEvent('message', {
+      source: live.window as unknown as Window, origin: 'https://chatgpt.com',
+      data: { type: 'cos-core-mention', path: null, name: null, candidates }
+    }));
+    live.document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+      live!.dom.reconfigure({ url: 'https://chatgpt.com/c/' + chatA });
+      userTurn(live!.document, 'neutral-core-receipt', text, { sent: false });
+      live!.document.querySelector('#prompt-textarea')!.textContent = '';
+    });
+    const adapter = (live.window as any).CLF_DOM;
+    const send = adapter.send;
+    const mentions: unknown[] = [];
+    adapter.send = (options: { mention?: unknown }) => { mentions.push(options.mention ?? null); return send({ ...options, mention: null }); };
+    expect(await live.runtimeMessage({ type: 'clf-desktop-input', id: inputId, conversationId: null })).toEqual({ ok: true });
+    expect(mentions).toEqual([expected]);
+  });
+
+  it('rejects a same-name alias candidate with a foreign app id', async () => {
+    live = await harness('https://chatgpt.com/?cos-input=' + inputId, {
+      status: () => ({ connected: true, paired: true, port: 8765, pending: 0,
+        connectorNames: { core: 'Local Tools Core (Windows)', desktop: 'Local Tools Desktop (Windows)', plugins: 'Local Tools Plugins (Windows)' },
+        connectorApps: { core: [{ appId: 'asdk_app_win2222', linkId: 'link_win', name: 'Local Tools Core (Windows)' }], desktop: [], plugins: [] } }),
+      desktop_input: message => ({ ok: true, data: message.authorize || message.ack ? { ok: true } : { input: claimed() } })
+    });
+    await settle();
+    live.window.dispatchEvent(new live.window.MessageEvent('message', {
+      source: live.window as unknown as Window, origin: 'https://chatgpt.com',
+      data: { type: 'cos-core-mention', path: null, name: null, pluginList: true,
+        candidates: [{ name: 'Chat On Steroids Core (Windows)', path: 'app://asdk_app_foreign' }] }
+    }));
+    live.document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+      live!.dom.reconfigure({ url: 'https://chatgpt.com/c/' + chatA });
+      userTurn(live!.document, 'foreign-core-receipt', text, { sent: false });
+      live!.document.querySelector('#prompt-textarea')!.textContent = '';
+    });
+    const adapter = (live.window as any).CLF_DOM;
+    const send = adapter.send;
+    const mentions: unknown[] = [];
+    adapter.send = (options: { mention?: unknown }) => { mentions.push(options.mention ?? null); return send({ ...options, mention: null }); };
+    expect(await live.runtimeMessage({ type: 'clf-desktop-input', id: inputId, conversationId: null })).toEqual({ ok: true });
+    expect(mentions).toEqual([null]);
+  });
+
+  it.each([
     ['the remembered Core before the page lists its apps', 'Chat On Steroids Core (Windows)', null,
       { path: 'app://asdk_app_win2222', name: 'Chat On Steroids Core (Windows)' }],
     ['nothing when the remembered Core has another name', 'Chat On Steroids Core', null, null],
@@ -2421,13 +2483,13 @@ describe('desktop input delivery and helper ownership', () => {
     expect(asks).toContainEqual(expect.objectContaining({ type: 'core_plugin', appId: 'asdk_app_x1' }));
   });
 
-  it('keeps the plain names for a status reply that carries foreign or malformed names', async () => {
+  it('keeps the neutral plain names for a status reply that carries foreign or malformed names', async () => {
     live = await harness(`https://chatgpt.com/c/${chatA}`, {
       status: () => ({ connected: true, paired: true, port: 8765, pending: 0, connectorNames: {
         core: 'Chat On Steroids Backup', desktop: 'Chat On Steroids Desktop (Windows)', plugins: 'Chat On Steroids Plugins (Windows)' } })
     });
     await settle();
-    expect((live.window as any).CLF_DOM.connectorNames()).toEqual(['Chat On Steroids Core', 'Chat On Steroids Desktop', 'Chat On Steroids Plugins']);
+    expect((live.window as any).CLF_DOM.connectorNames()).toEqual(['Local Tools Core', 'Local Tools Desktop', 'Local Tools Plugins']);
   });
 
   it.each([

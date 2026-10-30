@@ -214,7 +214,10 @@ it('reports the page connector tunnel and a settled empty Plugins list', async (
 });
 it.each([
   ['Chat On Steroids Plugins (Windows)', 257, true],
+  ['Local Tools Plugins (Windows)', 257, true],
   ['Chat On Steroids Core (Windows)', 65, false],
+  ['Local Tools Core (Windows)', 65, false],
+  ['Chat On Steroids Plugins (Win/VM)', 65, false],
   ['Chat On Steroids Plugins Backup', 65, false]
 ] as const)('applies the Plugins connector\'s limits to %s by its kind, whatever the computer', async (connector, count, accepted) => {
   // One ChatGPT account on two computers: this computer's Plugins connector carries its suffix
@@ -238,6 +241,37 @@ it('refuses a same-named app once another app id is proven for that connector', 
   const { api } = page();
   api.setConnectorApps({ core: [{ appId: 'asdk_app_other', linkId: null, name: 'Chat On Steroids Core' }], desktop: [], plugins: [] });
   expect(await api.pluginRefreshView('Chat On Steroids Core', [tool])).toBeNull();
+});
+it('accepts the exact legacy alias for a neutral configured role and machine', async () => {
+  const { api, props } = page();
+  props.connector.name = 'Chat On Steroids Core (Windows)';
+  const names = { core: 'Local Tools Core (Windows)', desktop: 'Local Tools Desktop (Windows)', plugins: 'Local Tools Plugins (Windows)' };
+  expect(api.setConnectorNames(names)).toBe(true);
+  expect(api.connectorNames()).toEqual(Object.values(names));
+  expect(await api.pluginRefreshView(names.core, [tool])).toMatchObject({ appId: 'asdk_app_synthetic', connectorName: 'Chat On Steroids Core (Windows)' });
+  props.connector.name = 'Chat On Steroids Core (Mac)';
+  expect(await api.pluginRefreshView(names.core, [tool])).toBeNull();
+  props.connector.name = 'Chat On Steroids Desktop (Windows)';
+  expect(await api.pluginRefreshView(names.core, [tool])).toBeNull();
+});
+it('rejects malformed configured names and an alias collision during first enrollment', async () => {
+  const { api } = page();
+  expect(api.setConnectorNames({ core: 'Local Tools Core (Win/VM)', desktop: 'Local Tools Desktop', plugins: 'Local Tools Plugins' })).toBe(false);
+  expect(api.setConnectorNames({ core: 'Local Tools Desktop', desktop: 'Local Tools Core', plugins: 'Local Tools Plugins' })).toBe(false);
+  expect(api.connectorNames()).toEqual(['Local Tools Core', 'Local Tools Desktop', 'Local Tools Plugins']);
+  api.setConnectorNames({ core: 'Local Tools Core (Windows)', desktop: 'Local Tools Desktop (Windows)', plugins: 'Local Tools Plugins (Windows)' });
+  api.setConnectorApps({ core: [
+    { appId: 'asdk_app_synthetic', name: 'Local Tools Core (Windows)' },
+    { appId: 'asdk_app_other', name: 'Chat On Steroids Core (Windows)' }
+  ], desktop: [], plugins: [] });
+  expect(await api.pluginRefreshView('Local Tools Core (Windows)', [tool])).toBeNull();
+});
+it('rejects a foreign ID under the same legacy alias as the neutral configured Core', async () => {
+  const { api, props } = page();
+  props.connector.name = 'Chat On Steroids Core (Windows)';
+  api.setConnectorNames({ core: 'Local Tools Core (Windows)', desktop: 'Local Tools Desktop (Windows)', plugins: 'Local Tools Plugins (Windows)' });
+  api.setConnectorApps({ core: [{ appId: 'asdk_app_other', name: 'Chat On Steroids Core (Windows)' }], desktop: [], plugins: [] });
+  expect(await api.pluginRefreshView('Local Tools Core (Windows)', [tool])).toBeNull();
 });
 it.each(['legacy', 'native'])('retains proven identity when the request itself uses the renamed name (%s)', async route => {
   const fixture = route === 'native' ? settingsPage() : page();

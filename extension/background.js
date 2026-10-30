@@ -278,10 +278,16 @@ let connectorNames = null;
  */
 let ownCoreApp = null;
 
+function connectorNameParts(value) {
+  if (typeof value !== 'string' || value.length > 80) return null;
+  const match = /^(Local Tools|Chat On Steroids) (Core|Desktop|Plugins)(?: \(([\p{L}\p{N} ._-]{1,32})\))?$/u.exec(value);
+  return match ? { role: match[2], suffix: match[3] || '' } : null;
+}
+
 function cleanOwnCoreApp(value) {
   return value && typeof value === 'object' && typeof value.appId === 'string' &&
     /^asdk_app_[A-Za-z0-9_-]{1,160}$/.test(value.appId) && typeof value.name === 'string' &&
-    /^Chat On Steroids Core(?: \([\p{L}\p{N} ._-]{1,32}\))?$/u.test(value.name)
+    connectorNameParts(value.name)?.role === 'Core'
     ? { appId: value.appId, name: value.name } : null;
 }
 
@@ -291,9 +297,7 @@ function cleanConnectorNames(value) {
   const names = {};
   for (const [surface, word] of [['core', 'Core'], ['desktop', 'Desktop'], ['plugins', 'Plugins']]) {
     const name = value[surface];
-    if (typeof name !== 'string' || name.length > 80 || (name !== `Chat On Steroids ${word}` &&
-        !/^Chat On Steroids (Core|Desktop|Plugins) \([\p{L}\p{N} ._-]{1,32}\)$/u.test(name)) ||
-        !name.startsWith(`Chat On Steroids ${word}`)) return null;
+    if (connectorNameParts(name)?.role !== word) return null;
     names[surface] = name;
   }
   return names;

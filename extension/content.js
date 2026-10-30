@@ -977,6 +977,17 @@
   // Core/Plugins identities from the page's hint list. This installation picks
   // its own exact name (including the computer suffix) at send time.
   let coreCandidates = [];
+  function connectorNameParts(value) {
+    if (typeof value !== 'string' || value.length > 80) return null;
+    const match = /^(Local Tools|Chat On Steroids) (Core|Desktop|Plugins)(?: \(([\p{L}\p{N} ._-]{1,32})\))?$/u.exec(value);
+    return match ? { role: match[2], suffix: match[3] || '' } : null;
+  }
+  function connectorNamesEquivalent(left, right) {
+    if (typeof left !== 'string' || typeof right !== 'string') return false;
+    if (left === right) return true;
+    const a = connectorNameParts(left), b = connectorNameParts(right);
+    return !!a && !!b && a.role === b.role && a.suffix === b.suffix;
+  }
   // This install's Core as another tab of this browser last saw it listed (background `status`).
   let knownOwnCore = null;
   window.addEventListener('message', (event) => {
@@ -985,8 +996,8 @@
     coreCandidates = Array.isArray(event.data.candidates)
       ? event.data.candidates.slice(0, 16).filter(entry => typeof entry?.name === 'string' && entry.name.length <= 80)
         .map(entry => ({ name: entry.name, path: valid(entry.path) }))
-      // An observer from before suffixes names only the plain Core.
-      : event.data.name === 'Chat On Steroids Core' ? [{ name: event.data.name, path: valid(event.data.path) }] : [];
+      // An observer that reports one plain connector still names the exact Core role.
+      : connectorNamesEquivalent(event.data.name, 'Local Tools Core') ? [{ name: event.data.name, path: valid(event.data.path) }] : [];
     corePluginList = event.data.pluginList === true;
     reportCorePlugin();
   });
@@ -1024,7 +1035,8 @@
     if (byId) return byId;
     if (!ownNamesKnown) return null;
     const own = CLF_DOM.connectorNames()[0];
-    const byName = coreCandidates.find(entry => entry.name === own);
+    const matches = coreCandidates.filter(entry => connectorNamesEquivalent(entry.name, own));
+    const byName = matches.length === 1 ? matches[0] : null;
     return byName && (!proven.length || (byName.path && proven.includes(byName.path))) ? byName : null;
   }
   /** This install's Core app as this page itself lists it, or null when missing or ambiguous. */
@@ -1040,13 +1052,13 @@
     const own = CLF_DOM.connectorNames()[0];
     const proven = provenCorePaths();
     if (corePluginList || !knownOwnCore ||
-        (proven.length ? !proven.includes(knownOwnCore.path) : !ownNamesKnown || knownOwnCore.name !== own)) return null;
+        (proven.length ? !proven.includes(knownOwnCore.path) : !ownNamesKnown || !connectorNamesEquivalent(knownOwnCore.name, own))) return null;
     return { path: knownOwnCore.path, name: knownOwnCore.name };
   }
   /** Only the exact Plugins app advertised by this page and named by this COS install. */
   function currentPluginsMention() {
     const own = CLF_DOM.connectorNames()[2];
-    const matches = coreCandidates.filter(entry => entry.name === own);
+    const matches = coreCandidates.filter(entry => connectorNamesEquivalent(entry.name, own));
     return matches.length === 1 && matches[0].path ? { path: matches[0].path, name: own } : null;
   }
   /**
@@ -6539,7 +6551,8 @@
   const LEGACY_CONNECTORS = ['TobisComputer'];
 
   function ourConnectorApp(name) {
-    return typeof name === 'string' && (CLF_DOM.connectorNames().includes(name) || LEGACY_CONNECTORS.includes(name));
+    return typeof name === 'string' && (CLF_DOM.connectorNames().some(own => connectorNamesEquivalent(name, own)) ||
+      LEGACY_CONNECTORS.includes(name));
   }
 
   function ourConnectorSeen(seen) {
