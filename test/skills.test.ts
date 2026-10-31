@@ -44,7 +44,8 @@ describe('managed Skills store', () => {
     expect(await listSkills()).toEqual([]);
     const instructions = skillCatalogInstructions();
     expect(instructions).toContain('# Installed skills');
-    expect(instructions).toContain(JSON.stringify(path.join(userData, 'skills')));
+    expect(instructions).toContain('Managed Skills library: /skills');
+    expect(instructions).not.toContain(JSON.stringify(path.join(userData, 'skills')));
     expect(instructions).toContain('No skills are installed');
     expect(instructions).toContain('Install or maintain requested skills with the file and command tools.');
   });
@@ -78,7 +79,8 @@ describe('managed Skills store', () => {
     expect(advertised).toContain(JSON.stringify({ id: summary.id, name: summary.name, description: summary.description }));
     expect(advertised).not.toContain(JSON.stringify(summary.path));
     expect(advertised).not.toContain('Use the entire file');
-    expect(advertised).toContain(JSON.stringify(path.join(userData, 'skills')));
+    expect(advertised).toContain('Managed Skills library: /skills');
+    expect(advertised).not.toContain(JSON.stringify(path.join(userData, 'skills')));
   });
 
   it('falls back to heading and prose when relevant frontmatter is not simple scalar metadata', async () => {
