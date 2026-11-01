@@ -873,6 +873,28 @@ describe('the reply', () => {
     }
   });
 
+  it('does not retry an HTTP 422 for the same turn but allows a newer turn', async () => {
+    const id = 'c-terminal-422';
+    const sessionId = await seed(id);
+    let attempts = 0;
+    globalThis.fetch = (async () => {
+      attempts += 1;
+      return new Response('{}', { status: 422 });
+    }) as never;
+
+    const first = goal.startGoalDraft({ sessionId, conversationId: id, turnId: 'g-1' });
+    const failure = await settled(id);
+    expect(failure).toMatchObject({ stage: 'failed', retryable: false, reply: '' });
+    expect(goal.ackGoalDraft(id, failure.token)).toBe(true);
+    expect(goal.startGoalDraft({ sessionId, conversationId: id, turnId: 'g-1' }).token).toBe(first.token);
+    expect(attempts).toBe(1);
+
+    const next = goal.startGoalDraft({ sessionId, conversationId: id, turnId: 'g-2' });
+    expect(next.token).not.toBe(first.token);
+    expect((await settled(id)).retryable).toBe(false);
+    expect(attempts).toBe(2);
+  });
+
   /**
    * The one retry authority, exercised end to end: ack the failure, ask again, same turn.
    *
