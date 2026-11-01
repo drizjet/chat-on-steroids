@@ -256,7 +256,7 @@ it('keeps the reported interface language and the extension preferences through 
   expect(getConfig().ui.browserPreferences).toEqual({ overwrite: false, durations: true });
 });
 
-it.each(['playfulStatus', 'playfulContinue', 'followOutput', 'announceTurns'] as const)('saves the %s display switch from Settings', async key => {
+it.each(['playfulStatus', 'playfulContinue', 'followOutput', 'announceTurns', 'showMessageTimes'] as const)('saves the %s display switch from Settings', async key => {
   // Both are plain ui booleans saved by the general Settings save. The save schema dropped keys
   // it did not list, so a switch that was not listed reverted on the next state push.
   const base = getConfig();
@@ -266,6 +266,51 @@ it.each(['playfulStatus', 'playfulContinue', 'followOutput', 'announceTurns'] as
   // A stale snapshot that never touched the switch keeps the saved value.
   expect(await save({ ...base, ui: { ...base.ui, theme: base.ui.theme === 'light' ? 'dark' : 'light' } }, base)).toMatchObject({ ok: true });
   expect(getConfig().ui[key]).toBe(wanted);
+});
+
+// CodeRabbit on #1948: a form from before the switch existed sends it off without an edit; that is not
+// turning it off.
+it('keeps Show message times on through a stale save whose form sends the switch off without an edit', async () => {
+  const base = getConfig();
+  expect(await save({ ...base, ui: { ...base.ui, showMessageTimes: true } }, base)).toMatchObject({ ok: true });
+  const now = getConfig();
+  const { showMessageTimes: _, ...older } = now.ui;
+  const stale = { ...now, ui: older };
+  expect(await save({ ...stale, ui: { ...older, showMessageTimes: false, theme: now.ui.theme === 'light' ? 'dark' : 'light' } }, stale)).toMatchObject({ ok: true });
+  expect(getConfig().ui.showMessageTimes).toBe(true);
+});
+
+it('saves the ask-before-mouse-and-keyboard choice (#1804), keeps it through a stale save, and refuses an unknown one', async () => {
+  const base = getConfig();
+  expect(await save({ ...base, ui: { ...base.ui, desktopAsk: 'always' } }, base)).toMatchObject({ ok: true });
+  expect(getConfig().ui.desktopAsk).toBe('always');
+  expect(await save({ ...base, ui: { ...base.ui, theme: base.ui.theme === 'light' ? 'dark' : 'light' } }, base)).toMatchObject({ ok: true });
+  expect(getConfig().ui.desktopAsk).toBe('always');
+  const now = getConfig();
+  expect(await save({ ...now, ui: { ...now.ui, desktopAsk: 'sometimes' } }, now)).toMatchObject({ ok: false });
+  expect(getConfig().ui.desktopAsk).toBe('always');
+  // CodeRabbit: a stale snapshot from before the choice existed (none saved) and the form's default
+  // (off) are the same choice, not an edit: the live Always ask stays.
+  const { desktopAsk: _, ...older } = now.ui;
+  const stale = { ...now, ui: older };
+  expect(await save({ ...stale, ui: { ...older, desktopAsk: 'off' } }, stale)).toMatchObject({ ok: true });
+  expect(getConfig().ui.desktopAsk).toBe('always');
+});
+
+it('saves desktop control for calls without a known chat, off by default, and keeps it through a stale save (2026-10-30)', async () => {
+  const base = getConfig();
+  expect(base.ui.desktopUnattributed).toBeUndefined();
+  expect(await save({ ...base, ui: { ...base.ui, desktopUnattributed: true } }, base)).toMatchObject({ ok: true });
+  expect(getConfig().ui.desktopUnattributed).toBe(true);
+  // A stale form without the field, or with the form's default (off), is not an edit: it stays on.
+  const now = getConfig();
+  const { desktopUnattributed: _, ...older } = now.ui;
+  const stale = { ...now, ui: older };
+  expect(await save({ ...stale, ui: { ...older, desktopUnattributed: false, theme: now.ui.theme === 'light' ? 'dark' : 'light' } }, stale)).toMatchObject({ ok: true });
+  expect(getConfig().ui.desktopUnattributed).toBe(true);
+  const latest = getConfig();
+  expect(await save({ ...latest, ui: { ...latest.ui, desktopUnattributed: false } }, latest)).toMatchObject({ ok: true });
+  expect(getConfig().ui.desktopUnattributed).toBe(false);
 });
 
 it('remembers that the first-run tour was taken or declined, through any later settings save (#1833)', async () => {
@@ -1391,6 +1436,18 @@ describe('settings writes from more than one UI', () => {
     expect(getConfig().ui.tabsToKeepOpen).toBe(6);
     expect(getConfig().goal).toMatchObject({ helperModel: 'account-helper', helperReasoning: 'medium', model: base.goal.model });
   });
+  it('saves the Goal step reviewer choice, keeps it through a stale unrelated save, and refuses a bad one (#1832)', async () => {
+    const base = defaultConfig();
+    await saveConfig(base);
+    expect((await save({ ...base, goal: { ...base.goal, reviewerModel: 'same' } }, base)).ok).toBe(true);
+    expect(getConfig().goal.reviewerModel).toBe('same');
+    // A form painted before that save does not carry the field back to off.
+    expect((await save({ ...base, ui: { ...base.ui, tabsToKeepOpen: 5 } }, base)).ok).toBe(true);
+    expect(getConfig().goal.reviewerModel).toBe('same');
+    const now = getConfig();
+    expect((await save({ ...now, goal: { ...now.goal, reviewerModel: 'y'.repeat(200) } }, now)).ok).toBe(false);
+    expect(getConfig().goal.reviewerModel).toBe('same');
+  });
   it('saves the secrets shield switch, and keeps it when a form without it saves (#1797)', async () => {
     const base = defaultConfig();
     await saveConfig(base);
@@ -1440,6 +1497,21 @@ describe('settings writes from more than one UI', () => {
     expect(getConfig().ui.planBackend).toBe('chatgpt');
     expect((await save({ ...current, ui: { ...current.ui, planBackend: 'unsupported' } }, current)).ok).toBe(false);
     expect(getConfig().ui.planBackend).toBe('chatgpt');
+  });
+  // #1914: System is saved as the choice; the window shows the theme the system has now.
+  it('saves System and paints the window in the system\'s theme', async () => {
+    currentWindow = { setBackgroundColor: vi.fn(), setTitleBarOverlay: vi.fn(), isDestroyed: () => false, webContents: { send: vi.fn() } };
+    const base = { ...defaultConfig(), ui: { ...defaultConfig().ui, theme: 'light' as const } };
+    await saveConfig(base);
+    (nativeTheme as any).shouldUseDarkColors = true;
+    try {
+      const reply = await save({ ...base, ui: { ...base.ui, theme: 'system' as const } }, base);
+      expect(reply.ok, reply.error).toBe(true);
+      expect(getConfig().ui.theme).toBe('system');
+      expect(nativeTheme.themeSource).toBe('system');
+      expect(currentWindow.setBackgroundColor).toHaveBeenLastCalledWith('#181818');
+      expect((await save({ ...getConfig(), ui: { ...getConfig().ui, theme: 'sepia' as never } }, getConfig())).ok).toBe(false);
+    } finally { delete (nativeTheme as any).shouldUseDarkColors; }
   });
   it('does not let a stale renderer snapshot undo a newer extension setting', async () => {
     currentWindow = {

@@ -189,6 +189,8 @@ export interface UiPrefs {
   sendCheckUrl?: string;
   /** Keep the chat at its end while it grows, here and on ChatGPT, until the reader scrolls up. On unless false. */
   followOutput?: boolean;
+  /** Show each chat message's time above it (the full date on hover). Off unless true (2026-10-30). */
+  showMessageTimes?: boolean;
   /** Add the Chat On Steroids Core mention to the user's own prompts sent from the app. On unless false. */
   mentionCore?: boolean;
   /** Prefer the installed Plugins app on regular COS-managed sends; worker/recovery sends still use Core. Off by default. */
@@ -246,8 +248,16 @@ export interface UiPrefs {
   chatBrowser?: ChatBrowser;
   /** Where a minimized built-in browser window goes (default: the taskbar or Dock). */
   cosBrowserMinimize?: 'taskbar' | 'tray';
-  /** Explicit choice, never inherited from the OS: the window looks how you left it. */
-  theme: 'light' | 'dark';
+  /**
+   * #1804: before a desktop step clicks, types or moves the pointer: never ask (missing, 'off'), ask
+   * while the person used the computer in the last 30 s ('active'), or ask whenever the chat holds no
+   * 2-minute Go ahead ('always').
+   */
+  desktopAsk?: 'off' | 'active' | 'always';
+  /** Desktop control for a call the app cannot tie to a chat. Off unless chosen. */
+  desktopUnattributed?: boolean;
+  /** Light or Dark stays as chosen; System follows the operating system (#1914). */
+  theme: import('./appearance.js').ThemeChoice;
   appearance?: import('./appearance.js').AppearanceSettings;
 }
 
@@ -352,6 +362,11 @@ export interface GoalSettings {
   includeToolCalls?: boolean;
   helperModel?: string;
   helperReasoning?: ReasoningEffort;
+  /**
+   * Who reviews each Goal step that edited files (#1832): '' is off (the default), 'same' is a
+   * reviewer worker on the Goal chat's own model, anything else a ChatGPT model id for it.
+   */
+  reviewerModel?: string;
   backend?: GoalBackend;
   loopBackend?: 'api' | 'chatgpt';
   enabled: boolean;
