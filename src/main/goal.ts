@@ -414,6 +414,8 @@ interface GoalReplyObligation {
   explicitActivation?: true;
   /** HTTP 409 may mean this exact source turn was already accepted by the provider. */
   settled409TurnId?: string;
+  /** HTTP 422 refused this exact request; replay needs a deliberate rearm or a new turn. */
+  settled422TurnId?: string;
   /** Exact source turn captured before its silence grant retired. Pro also requires opt-in. */
   silenceSourceTurnId?: string;
   silencePro?: boolean;
@@ -432,6 +434,13 @@ interface GoalReplyObligation {
   /** When this app froze the decision. The row's whole lifetime is measured from here. */
   acceptedAt: number;
   state: 'pending' | 'handled';
+}
+
+function settledReplyHttpFailure(reply: GoalReplyObligation | undefined, turnId: string): 'http_409' | 'http_422' | null {
+  if (!reply || reply.turnId !== turnId) return null;
+  if (reply.settled409TurnId === turnId) return 'http_409';
+  if (reply.settled422TurnId === turnId) return 'http_422';
+  return null;
 }
 
 const goalReplies = new Map<string, GoalReplyObligation>();
@@ -521,6 +530,8 @@ export function restoreGoalReplies(snapshot: GoalRepliesSnapshot | null): void {
       ...(raw.explicitActivation === true ? { explicitActivation: true } : {}),
       ...(typeof raw.settled409TurnId === 'string' && raw.settled409TurnId.slice(0, 200) === String(raw.turnId).slice(0, 200)
         ? { settled409TurnId: raw.settled409TurnId.slice(0, 200) } : {}),
+      ...(typeof raw.settled422TurnId === 'string' && raw.settled422TurnId.slice(0, 200) === String(raw.turnId).slice(0, 200)
+        ? { settled422TurnId: raw.settled422TurnId.slice(0, 200) } : {}),
       eventSeq: raw.eventSeq,
       acceptedAt: raw.acceptedAt,
       state: raw.state
@@ -559,20 +570,21 @@ export function goalDraftBusy(conversationId: string): boolean {
 /** Reloading the source cannot repair a settled settings/transport refusal. */
 export function goalDraftNeedsIntervention(conversationId: string): boolean {
   const reply = goalReplies.get(conversationId);
-  if (reply && reply.settled409TurnId === reply.turnId) return true;
+  if (reply && settledReplyHttpFailure(reply, reply.turnId)) return true;
   const draft = drafts.get(conversationId);
   return draft?.stage === 'failed' && draft.turnId === reply?.turnId &&
     !retryableGoalFailure(draft.error ?? '');
 }
 
-async function markGoalReplyHttp409(draft: GoalDraft): Promise<void> {
+async function markGoalReplyHttpFailure(draft: GoalDraft, error: 'http_409' | 'http_422'): Promise<void> {
   if (draft.acknowledged || drafts.get(draft.conversationId) !== draft) return;
   const { conversationId, turnId } = draft;
   const reply = goalReplies.get(conversationId);
-  if (!reply || reply.turnId !== turnId || reply.settled409TurnId === turnId) return;
+  if (!reply || reply.turnId !== turnId || settledReplyHttpFailure(reply, turnId)) return;
   // Publish the source-scoped fence before the failed draft can be acknowledged or recovered.
   // Keeping it in the existing obligation also survives draft-memory loss on process restart.
-  reply.settled409TurnId = turnId;
+  if (error === 'http_409') reply.settled409TurnId = turnId;
+  else reply.settled422TurnId = turnId;
   try {
     await writeDurableNow(GOAL_REPLIES_STATE, snapshotGoalReplies());
   } catch {
@@ -738,6 +750,8 @@ export async function acceptGoalReplyNow(input: {
     ...(input.listenUntil ? { listenUntil: input.listenUntil } : {}),
     ...(current?.turnId === input.turnId && current.settled409TurnId === input.turnId
       ? { settled409TurnId: input.turnId } : {}),
+    ...(current?.turnId === input.turnId && current.settled422TurnId === input.turnId
+      ? { settled422TurnId: input.turnId } : {}),
     ...(provisionalUpgrade && current?.pickupAttempts !== undefined ? { pickupAttempts: current.pickupAttempts } : {}),
     ...(provisionalUpgrade && current?.pickupNextAt ? { pickupNextAt: current.pickupNextAt } : {}),
     ...(provisionalUpgrade && current?.pickupStoppedAt ? { pickupStoppedAt: current.pickupStoppedAt } : {}),
@@ -1422,9 +1436,10 @@ export function goalOutcomeFor(conversationId: string): GoalDraftView | null {
   const draft = drafts.get(conversationId);
   if (draft) return draft.acknowledged && draft.stage === 'no-reply' ? view(draft) : null;
   const pending = goalReplies.get(conversationId);
-  if (pending?.state === 'pending' && pending.settled409TurnId === pending.turnId) {
+  const failure = pending && settledReplyHttpFailure(pending, pending.turnId);
+  if (pending?.state === 'pending' && failure) {
     return { token: '', conversationId, turnId: pending.turnId, stage: 'failed', backend: 'api', model: '',
-      text: '', reply: '', error: 'http_409', retryable: false };
+      text: '', reply: '', error: failure, retryable: false };
   }
   // After a restart: the kept decision, with nothing to type and nothing to retry.
   const kept = goalOutcomes.get(conversationId);
@@ -1597,6 +1612,7 @@ export async function setGoalReplyActiveNow(conversationId: string, active: bool
   if (active) {
     before.acceptedAt = Math.max(Date.now(), previous.acceptedAt + 1);
     delete before.settled409TurnId;
+    delete before.settled422TurnId;
   }
   if (active) before.explicitActivation = true;
   const acceptedAt = before.acceptedAt;
@@ -1738,7 +1754,7 @@ export function startGoalDraft(input: StartGoalDraftInput): GoalDraftView {
   }
   const settings = getConfig().goal;
   const backend = goalBackendFor(goalDrivingMode(input.conversationId));
-  const settled409 = goalReplies.get(input.conversationId)?.settled409TurnId === input.turnId;
+  const settledHttpFailure = settledReplyHttpFailure(goalReplies.get(input.conversationId), input.turnId);
   const draft: GoalDraft = {
     token: `goal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
     conversationId: input.conversationId,
@@ -1753,13 +1769,13 @@ export function startGoalDraft(input: StartGoalDraftInput): GoalDraftView {
     objective: goalObjectiveFor(input.conversationId),
     clientId,
     turnId: input.turnId,
-    stage: settled409 ? 'failed' : 'sending',
+    stage: settledHttpFailure ? 'failed' : 'sending',
     model: backend === 'chatgpt' ? helperModelLabel() : settings.model,
     text: '',
     reply: '',
-    error: settled409 ? 'http_409' : null,
+    error: settledHttpFailure,
     startedAt: Date.now(),
-    settledAt: settled409 ? Date.now() : 0,
+    settledAt: settledHttpFailure ? Date.now() : 0,
     acknowledged: false,
     work: null,
     abort: null
@@ -1775,8 +1791,9 @@ export function startGoalDraft(input: StartGoalDraftInput): GoalDraftView {
 export function beginGoalDraft(conversationId: string, token: string): boolean {
   const draft = drafts.get(conversationId);
   if (!draft || draft.token !== token || draft.acknowledged || draft.work) return false;
-  if (goalReplies.get(conversationId)?.settled409TurnId === draft.turnId) {
-    if (draft.stage !== 'failed') settle(draft, 'failed', 'http_409');
+  const settledHttpFailure = settledReplyHttpFailure(goalReplies.get(conversationId), draft.turnId);
+  if (settledHttpFailure) {
+    if (draft.stage !== 'failed') settle(draft, 'failed', settledHttpFailure);
     return false;
   }
   draft.work = run(draft).catch((err: Error) => {
@@ -2211,8 +2228,9 @@ async function run(draft: GoalDraft): Promise<void> {
     // Logged like the exception path below. Ten rate limits in a row on 2026-09-02 left no
     // trace in app.log because a provider's refusal is an answer, not an exception.
     if (decision.action === 'http' || decision.action === 'invalid') {
-      if (draft.backend === 'api' && /^http_409(?:$|:)/.test(decision.error)) {
-        await markGoalReplyHttp409(draft);
+      const settledHttpFailure = /^(http_409|http_422)(?:$|:)/.exec(decision.error)?.[1] as 'http_409' | 'http_422' | undefined;
+      if (draft.backend === 'api' && settledHttpFailure) {
+        await markGoalReplyHttpFailure(draft, settledHttpFailure);
         if (draft.acknowledged || drafts.get(draft.conversationId) !== draft) return;
       }
       logWarn(`goal: draft for ${draft.conversationId} failed — ${decision.error}`);

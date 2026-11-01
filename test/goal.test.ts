@@ -1542,7 +1542,7 @@ describe('when OpenRouter refuses', () => {
     return session.id;
   };
 
-  it.each([[409, false], [503, true]] as const)(
+  it.each([[409, false], [422, false], [503, true]] as const)(
     'keeps HTTP %s retryability and the acknowledged turn fence consistent', async (status, retryable) => {
       const conversationId = `c-http-fence-${status}`;
       const sessionId = await seed(conversationId);
@@ -1552,7 +1552,7 @@ describe('when OpenRouter refuses', () => {
       globalThis.fetch = (async () => {
         attempts += 1;
         return Response.json({ error: {
-          type: status === 409 ? 'generation_outcome_uncertain' : 'worker_busy',
+          type: status === 409 ? 'generation_outcome_uncertain' : status === 422 ? 'invalid_goal_decision' : 'worker_busy',
           retryable,
           message: 'PRIVATE_FAILURE_BODY must stay out of diagnostics',
         } }, { status });
@@ -1572,13 +1572,14 @@ describe('when OpenRouter refuses', () => {
 
       const saved = await readDurable<GoalRepliesSnapshot>(goal.GOAL_REPLIES_STATE);
       expect(saved).not.toBeNull();
-      expect(saved!.replies[0]?.settled409TurnId).toBe(retryable ? undefined : 'same-turn');
+      expect(saved!.replies[0]?.settled409TurnId).toBe(status === 409 ? 'same-turn' : undefined);
+      expect(saved!.replies[0]?.settled422TurnId).toBe(status === 422 ? 'same-turn' : undefined);
       expect(JSON.stringify(saved)).not.toContain('PRIVATE_FAILURE_BODY');
       goal.resetGoalStateForTests();
       goal.restoreGoalReplies(saved);
       expect(goal.goalDraftNeedsIntervention(conversationId)).toBe(!retryable);
       expect(goal.goalOutcomeFor(conversationId)).toEqual(retryable ? null : expect.objectContaining({
-        token: '', stage: 'failed', error: 'http_409', retryable: false,
+        token: '', stage: 'failed', error: `http_${status}`, retryable: false,
       }));
       if (!retryable) {
         // A later accepted assistant identity for the same source turn cannot erase uncertainty.
@@ -1601,8 +1602,8 @@ describe('when OpenRouter refuses', () => {
     }
   );
 
-  it('does not let a late HTTP 409 fence a deliberate same-turn rearm', async () => {
-    const conversationId = 'c-http-409-late-rearm';
+  it.each([409, 422])('does not let a late HTTP %i fence a deliberate same-turn rearm', async (status) => {
+    const conversationId = `c-http-${status}-late-rearm`;
     const sessionId = await seed(conversationId);
     await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'assistant-before-rearm',
       turnId: 'same-turn', eventSeq: 99, blocked: false });
@@ -1617,7 +1618,7 @@ describe('when OpenRouter refuses', () => {
         rearmed = await goal.setGoalReplyActiveNow(conversationId, true);
         return originalGetSession(id);
       });
-      return Response.json({ error: { type: 'generation_outcome_uncertain' } }, { status: 409 });
+      return Response.json({ error: { type: 'refused' } }, { status });
     }) as never;
     try {
       goal.startGoalDraft({ sessionId, conversationId, turnId: 'same-turn' });
@@ -1629,18 +1630,19 @@ describe('when OpenRouter refuses', () => {
       expect(goal.goalDraftNeedsIntervention(conversationId)).toBe(false);
       const saved = await readDurable<GoalRepliesSnapshot>(goal.GOAL_REPLIES_STATE);
       expect(saved?.replies[0]?.settled409TurnId).toBeUndefined();
+      expect(saved?.replies[0]?.settled422TurnId).toBeUndefined();
     } finally { read?.mockRestore(); }
   });
 
-  it('allows deliberate rearm of the exact source after a restored HTTP 409 fence', async () => {
-    const conversationId = 'c-http-409-rearm';
+  it.each([409, 422])('allows deliberate rearm of the exact source after a restored HTTP %i fence', async (status) => {
+    const conversationId = `c-http-${status}-rearm`;
     const sessionId = await seed(conversationId);
     await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'assistant-http-409-rearm',
       turnId: 'same-turn', eventSeq: 99, blocked: false });
     let attempts = 0;
     globalThis.fetch = (async () => {
       attempts += 1;
-      return Response.json({ error: { type: 'generation_outcome_uncertain', message: 'PRIVATE_REARM_BODY' } }, { status: 409 });
+      return Response.json({ error: { type: 'refused', message: 'PRIVATE_REARM_BODY' } }, { status });
     }) as never;
     goal.startGoalDraft({ sessionId, conversationId, turnId: 'same-turn' });
     const failure = await settled(conversationId);
