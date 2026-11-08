@@ -60,7 +60,6 @@ import type { AppState, Capability, ChatBrowser, Config, LogEntry, SurfaceStatus
 import { opensInCosBrowser } from '../shared/cos-browser-sites.js';
 import {
   browserExtensionRequired,
-  isNewer,
   CAPABILITY_DETAILS,
   CAPABILITY_LABELS,
   capabilityTools,
@@ -68,6 +67,7 @@ import {
   DESKTOP_CAPABILITIES,
   WRITE_CAPABILITIES
 } from '../shared/types.js';
+import { extensionVersionRelation } from './update-versions.js';
 import type { SwarmState } from '../shared/session.js';
 import { $, ago, disclosureChevron, el, elapsedDurationText, icon, paintWhenShown, run, shortAgo, toast } from './dom.js';
 import { chatApply, chatSettingsPatch, chatVisible, initChat, openChatSearch, openChatView, openFeedback } from './chat.js';
@@ -1331,13 +1331,14 @@ let announced = false;
  * bar is for what the user can act on - a version to fetch by hand, an extension to reload -
  * while the Activity line reports every state, including the good one.
  */
-function updateSummary({ bridge, update, config, status }: AppState): { text: string; tone: UpdateTone; notice: boolean; extensionAction: string | null } | null {
+interface UpdateSummary { text: string; tone: UpdateTone; notice: boolean; extensionAction: string | null; reviewRequired: boolean }
+function updateSummary({ bridge, update, config, status }: AppState): UpdateSummary | null {
   // Only an extension older than this app is the user's to fix. The other direction is an app
   // that has not caught up yet - normal while an update downloads - and telling that user to
   // load the bundled folder again would talk them into downgrading a working extension. The
   // app sentence already owns being behind.
   const stale =
-    bridge.extensionVersion && isNewer(update.current, bridge.extensionVersion)
+    extensionVersionRelation(update.current, bridge.extensionVersion) === 'extension-behind'
       ? bridge.extensionVersion
       : null;
   // A mismatched companion can fail the protocol gate before it becomes present.
@@ -1393,7 +1394,7 @@ function updateSummary({ bridge, update, config, status }: AppState): { text: st
     tone = 'bad';
   }
   if (missing) { lines.push(t("Browser extension not connected. Open ChatGPT and check the extension in Setup to load models and send messages.")); tone = 'bad'; }
-  return { text: lines.join(' '), tone, notice: Boolean(update.latest || stale || missing), extensionAction: stale ? t("Update extension") : missing ? t("Check extension") : null };
+  return { text: lines.join(' '), tone, notice: Boolean(update.latest || stale || missing), extensionAction: stale ? t("Update extension") : missing ? t("Check extension") : null, reviewRequired };
 }
 
 /** The header bar, the Activity line and the one notification, from that single sentence. */
@@ -1411,7 +1412,7 @@ function paintUpdate(next: AppState): void {
   ui($('updateText'), 'textContent', () => updateSummary(next)?.text ?? '');
   $('updateExtension').hidden = !summary.extensionAction;
   ui($('updateExtension'), 'textContent', () => updateSummary(next)?.extensionAction ?? t("Update extension"));
-  $<HTMLButtonElement>('updateGet').hidden = !update.latest || isCoordinatorUpdateReviewRequired(update.error) || update.stage === 'checking' || update.stage === 'downloading' || update.stage === 'ready';
+  $<HTMLButtonElement>('updateGet').hidden = !update.latest || summary.reviewRequired || update.stage === 'checking' || update.stage === 'downloading' || update.stage === 'ready';
   // `ready` is the only state with a verified artifact on disk, and therefore the only one in
   // which pressing Install can do anything. Both buttons ask the same question of the same fact.
   const installable = update.stage === 'ready';

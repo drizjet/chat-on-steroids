@@ -98,8 +98,14 @@ void app.whenReady().then(async () => {
     const source = await fs.readFile(path.join(extension, 'background.js'), 'utf8');
     // A test-only reference invokes the existing popup status handler in its worker context.
     // Discovery, pairing, maintenance and reconnection remain the production implementations.
-    await fs.writeFile(path.join(extension, 'background.js'), source.replace(/const PORTS = \[[^\]]+\];/, `const PORTS = [${second}, ${first}];`) +
-      '\nglobalThis.__cosPortSmokeStatus = () => HANDLERS.status();\n');
+    await fs.writeFile(path.join(extension, 'background.js'),
+      source + '\nglobalThis.__cosPortSmokeStatus = () => HANDLERS.status();\n');
+    // Since 2.1.50 PORTS lives in the generated protocol.js (K7); patch the copy, not background.js.
+    const protocolPath = path.join(extension, 'protocol.js');
+    const protocolSource = await fs.readFile(protocolPath, 'utf8');
+    const patchedProtocol = protocolSource.replace(/export const PORTS = \[[^\]]+\];/, `export const PORTS = [${second}, ${first}];`);
+    assert.notEqual(patchedProtocol, protocolSource, 'protocol.js PORTS override must match the generated shape');
+    await fs.writeFile(protocolPath, patchedProtocol);
     const profile = path.join(run, 'chrome-profile');
     chrome = spawn(process.env.COS_TEST_CHROMIUM!, [`--user-data-dir=${profile}`, '--remote-debugging-port=0', '--headless=new',
       '--no-first-run', '--no-default-browser-check', '--disable-background-networking',

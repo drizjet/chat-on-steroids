@@ -10,3 +10,16 @@ export const BROWSER_BRIDGE_FALLBACK_PORTS = [18765, 18766, 18767, 18768, 18769,
 /** Auto's order, and exactly the list the extension scans (extension/background.js `PORTS`). */
 export const BROWSER_BRIDGE_AUTO_PORTS = [...BROWSER_BRIDGE_PORTS, ...BROWSER_BRIDGE_FALLBACK_PORTS] as const;
 export type BrowserBridgePort = 'auto' | (typeof BROWSER_BRIDGE_PORTS)[number];
+
+/**
+ * The wake channel's whole vocabulary (`browser-wake.ts` ↔ `extension/background.js`): the
+ * upgrade route and the four messages either side may send. The extension carries the same
+ * strings as literals; `test/extension-ports-single-source.test.ts` fails when they drift.
+ */
+export const WAKE_MESSAGES = {
+  route: '/wake',
+  ping: 'ping',
+  pong: 'pong',
+  wake: 'wake',
+  browserControl: 'browser-control'
+} as const;

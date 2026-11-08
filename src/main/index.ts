@@ -1,6 +1,7 @@
 import { closeRemoteSessions } from './remote/ssh.js';
 import { stopInputStartup } from './session/start-input.js';
 import { browserExtensionRequired } from '../shared/types.js';
+import { isPendingState } from '../shared/input.js';
 import { requestSessionFinishGoal, setFinishNotifier } from './session/finish.js';
 /**
  * Main process entry: window, tray, and the security posture for the renderer.
@@ -576,7 +577,7 @@ void app.whenReady().then(async () => {
     // A lookup that fails is not a deleted chat: the runner keeps the schedule and asks again.
     session: async id => { const summary = await getSession(id); return summary ? { id: summary.id, conversationId: summary.conversationId ?? null, activeTurnId: summary.activeTurnId ?? null } : null; },
     enqueue: input => enqueueInput(input),
-    pending: async () => new Set((await listInputs()).filter(row => ['queued', 'browser', 'tool'].includes(row.state)).map(row => row.id)),
+    pending: async () => new Set((await listInputs()).filter(row => isPendingState(row.state)).map(row => row.id)),
     log: logInfo
   };
   const checkSchedules = () => void runDueSchedules(Date.now(), scheduleDeps).catch(error => logWarn(`scheduled runs: the check failed (${error instanceof Error ? error.message : String(error)})`));

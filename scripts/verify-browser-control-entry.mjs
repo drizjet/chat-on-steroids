@@ -26,7 +26,8 @@ if(messageKey)for(const locale of await fs.readdir(path.join(extensionSource,'_l
   if(messages[messageKey]?.message)manifestNames.add(messages[messageKey].message);
 }
 const source=await fs.readFile(path.join(extensionSource,'background.js'),'utf8');
-const protocol=Number(/const BRIDGE_PROTOCOL = (\d+)/.exec(source)[1]);
+const protocolSource=await fs.readFile(path.join(extensionSource,'protocol.js'),'utf8');
+const protocol=Number(/export const BRIDGE_PROTOCOL = (\d+)/.exec(protocolSource)[1]);
 const alarm=/const RETRY_ALARM = '([^']+)'/.exec(source)[1];
 const server=http.createServer(async(req,res)=>{
   const route=req.url;requests.set(route,(requests.get(route)||0)+1);
@@ -52,8 +53,11 @@ const wss=new WebSocketServer({server,path:'/wake'});
 wss.on('connection',ws=>{ws.on('message',bytes=>{if(bytes.toString()===token){clients.add(ws);ws.send('wake');}});ws.on('close',()=>clients.delete(ws));});
 const extension=path.join(run,'extension');await fs.cp(extensionSource,extension,{recursive:true});
 // Isolate only discovery ports. All modules, manifest, message handlers and transport are production files.
-assert.ok(/const PORTS = \[[^\]]+\];/.test(source));
-await fs.writeFile(path.join(extension,'background.js'),source.replace(/const PORTS = \[[^\]]+\];/,`const PORTS = [${port}];`));
+// Since 2.1.50 PORTS lives in the generated protocol.js (K7); patch the copy, not background.js.
+const protocolPath=path.join(extension,'protocol.js');
+const patchedProtocol=protocolSource.replace(/export const PORTS = \[[^\]]+\];/,`export const PORTS = [${port}];`);
+assert.notEqual(patchedProtocol,protocolSource,'protocol.js PORTS override must match the generated shape');
+await fs.writeFile(protocolPath,patchedProtocol);
 const executable=process.env.COS_TEST_CHROMIUM||path.join(process.env.LOCALAPPDATA||'','ms-playwright','chromium-1243','chrome-win64','chrome.exe');
 const profile=path.join(run,'profile');
 const chrome=spawn(executable,[`--user-data-dir=${profile}`,'--remote-debugging-port=0','--headless=new','--no-first-run','--no-default-browser-check','--disable-background-networking',`--disable-extensions-except=${extension}`,`--load-extension=${extension}`,'about:blank'],{windowsHide:true,stdio:['ignore','ignore','pipe']});
@@ -77,7 +81,7 @@ try {
   },'Production worker startup');
   const popup=await cdp('Target.createTarget',{url:worker.url.replace(/background\.js$/,'popup.html')});
   const sessionId=(await cdp('Target.attachToTarget',{targetId:popup.targetId,flatten:true})).sessionId;
-  const status=await until(()=>evaluate(sessionId,'chrome.runtime.sendMessage({type:"status"})'),'Popup status');
+  const status=await until(async()=>{const next=await evaluate(sessionId,'chrome.runtime.sendMessage({type:"status"})');return next?.paired?next:null;},'Extension pairing');
   assert.equal(status.paired,true);report.checks.push('real popup message paired the production worker');
   await evaluate(sessionId,`chrome.alarms.create(${JSON.stringify(alarm)},{when:Date.now()+100})`);
   await until(()=>requests.get('/status'),'Authenticated production status');report.checks.push('real alarm and authenticated HTTP status reached the fixture bridge');

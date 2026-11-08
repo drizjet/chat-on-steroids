@@ -10,6 +10,10 @@ import { proxyForLog, proxyUrlFromResolution } from './tunnel/proxy.js';
  * Node's built-in proxy support carries it, for `fetch()` and `http(s).request()` alike. It has no
  * SOCKS, so a SOCKS-only system proxy leaves app requests direct, as before. A proxy the person set
  * in HTTPS_PROXY or HTTP_PROXY wins over the system's, as it does for the tunnel.
+ *
+ * Expiry: this shim exists only while the runtime may lack `setGlobalProxyFromEnv`. The pinned
+ * Electron runtime ships it (Node 24.14+); once no supported Electron is older, delete the guard
+ * and call it unconditionally.
  */
 
 /**

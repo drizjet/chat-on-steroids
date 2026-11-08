@@ -6,6 +6,27 @@ export interface InputImage { name: string; dataUrl: string; }
  * recorded native-message ids are presentation metadata and grant no file access. */
 export interface InputAttachment { id: string; name: string; size: number; mimeType: string; preview?: string; }
 export const MAX_INPUT_IMAGES = 10;
+
+/** The states a durable outbox row can never leave. One definition for the main process and the renderer. */
+export const INPUT_TERMINAL_STATES = ['sent', 'cancelled', 'failed'] as const;
+export type InputTerminalState = (typeof INPUT_TERMINAL_STATES)[number];
+export function isTerminalState(state: string): state is InputTerminalState {
+  return (INPUT_TERMINAL_STATES as readonly string[]).includes(state);
+}
+/** Terminal without a delivery: cancelled, or a Send that ended in failure. */
+export function isAbandonedState(state: string): boolean {
+  return state === 'cancelled' || state === 'failed';
+}
+/** Settled into the transcript, where a delivery receipt may exist. `failed` stays visible as a notice. */
+export function isSettledIntoTranscript(state: string): boolean {
+  return state === 'sent' || state === 'cancelled';
+}
+/** The states that still sit in the delivery pipeline: queued, offered to the browser, or using a tool. */
+export const INPUT_PENDING_STATES = ['queued', 'browser', 'tool'] as const;
+export type InputPendingState = (typeof INPUT_PENDING_STATES)[number];
+export function isPendingState(state: string): state is InputPendingState {
+  return (INPUT_PENDING_STATES as readonly string[]).includes(state);
+}
 export function injectableAttachments(files: Array<InputImage | InputAttachment>): boolean {
   return files.length > 0 && files.length <= MAX_INPUT_IMAGES && files.every(file => 'dataUrl' in file ||
     ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.mimeType));

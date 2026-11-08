@@ -1,5 +1,5 @@
 import type { AppState } from '../shared/types.js';
-import { isNewer } from '../shared/types.js';
+import { extensionVersionRelation } from './update-versions.js';
 import { t } from './i18n.js';
 import { isCoordinatorUpdateReviewRequired, updateErrorNextStep, updateErrorText } from './update-error.js';
 
@@ -25,8 +25,9 @@ export function updateReadiness(next: AppState): ReadinessRow[] {
     : update.latest ? (update.stage === 'ready' ? t('Ready to install {0}', [update.latest]) : t('Install {0} manually', [update.latest]))
     : appReady ? t('Up to date') : t('Not checked yet');
   const extensionReady = bridge.running && bridge.paired && bridge.present && bridge.extensionVersion === update.current;
-  const extensionOlder = !!bridge.extensionVersion && isNewer(update.current, bridge.extensionVersion);
-  const appOlder = !!bridge.extensionVersion && isNewer(bridge.extensionVersion, update.current);
+  const relation = extensionVersionRelation(update.current, bridge.extensionVersion);
+  const extensionOlder = relation === 'extension-behind';
+  const appOlder = relation === 'app-behind';
   const connectionFailed = ['offline', 'auth-failed', 'tunnel-unavailable'].includes(status.state);
   const rows: ReadinessRow[] = [
     { id: 'app', label: 'Chat On Steroids', status: appReady ? 'pass' : update.stage === 'failed' ? 'fail' : 'not-run',

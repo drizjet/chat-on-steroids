@@ -1,4 +1,5 @@
 import type { InputEntry } from './input.js';
+import { hasDeliveryReceipt } from './input.js';
 import { estimateTokens } from '../../shared/session.js';
 import { authoredTextOf, browserInputModel } from '../../shared/input.js';
 import { getSession, observeSessionModel, readAsset, readEvents, upsertMessageEvent, writeAsset } from './store.js';
@@ -11,7 +12,7 @@ import { notifyChanged } from './recorder.js';
 export async function recordDeliveredInput(entry: Readonly<InputEntry>, anchorCommitted?: (seq: number) => void): Promise<boolean> {
   const sessionId = entry.sessionId ?? entry.deliveredSessionId;
   const offered = entry.state === 'tool' && !!entry.owner && Number.isFinite(entry.offeredAt);
-  const confirmed = ['sent', 'cancelled'].includes(entry.state) && !!entry.messageId && Number.isFinite(entry.deliveredAt);
+  const confirmed = hasDeliveryReceipt(entry);
   if ((!offered && !confirmed) || !sessionId || entry.purpose === 'decision') return false;
   const messageId = offered ? `input:${entry.id}` : entry.messageId!;
   const time = offered || (messageId.startsWith('input:') && Number.isFinite(entry.offeredAt))

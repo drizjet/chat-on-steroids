@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import { BRIDGE_PROTOCOL } from '../src/main/version.js';
+import { BROWSER_BRIDGE_AUTO_PORTS } from '../src/shared/browser-bridge.js';
 
 // Most fixtures omit debugger; rendering cases run the real lease owner as well.
 const source = readFileSync(new URL('../extension/background.js', import.meta.url), 'utf8').replace(/^import .*$/gm, '');
@@ -313,6 +314,7 @@ async function worker(inputs: Array<{ id: string; conversationId: string | null;
       scripting
     },
     createBrowserControl: () => ({ pump: async () => {} }),
+    BRIDGE_PROTOCOL, PORTS: BROWSER_BRIDGE_AUTO_PORTS,
     fetch, URL, URLSearchParams, AbortController, setTimeout, clearTimeout, TextEncoder, console
   });
   vm.runInContext(activeTabsSource, context);

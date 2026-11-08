@@ -2,11 +2,13 @@
 import type http from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
 import { logInfo } from './logger.js';
+import { WAKE_MESSAGES } from '../shared/browser-bridge.js';
 
-const subscribers = new Set<(topic: 'wake' | 'browser-control') => void>();
+type WakeTopic = typeof WAKE_MESSAGES.wake | typeof WAKE_MESSAGES.browserControl;
+const subscribers = new Set<(topic: WakeTopic) => void>();
 /** The CoS browser's own copy of the extension, or the one in the person's browser. */
 export type WakeHost = 'cos' | 'browser';
-export function wakeBrowserWork(topic: 'wake' | 'browser-control' = 'wake'): void {
+export function wakeBrowserWork(topic: WakeTopic = WAKE_MESSAGES.wake): void {
   for (const wake of subscribers) wake(topic);
 }
 
@@ -89,7 +91,7 @@ export function attachBrowserWake(server: http.Server, allowed: (request: http.I
   let epoch = 0;
   const upgrade = (request: http.IncomingMessage, socket: import('node:stream').Duplex, head: Buffer) => {
     const url = new URL(request.url ?? '', 'http://127.0.0.1');
-    if (url.pathname !== '/wake' || !allowed(request) || sockets.clients.size >= 8) { socket.destroy(); return; }
+    if (url.pathname !== WAKE_MESSAGES.route || !allowed(request) || sockets.clients.size >= 8) { socket.destroy(); return; }
     const host = url.searchParams.get('host');
     sockets.handleUpgrade(request, socket, head, (client) => {
       if (host === 'cos' || host === 'browser') hosts.set(client, host);
@@ -116,7 +118,7 @@ export function attachBrowserWake(server: http.Server, allowed: (request: http.I
         if (binary) { client.terminate(); return; }
         const message = bytes.toString();
         if (authorized.has(client)) {
-          if (message === 'pong') authorized.set(client, Date.now());
+          if (message === WAKE_MESSAGES.pong) authorized.set(client, Date.now());
           else client.terminate();
           return;
         }
@@ -130,13 +132,13 @@ export function attachBrowserWake(server: http.Server, allowed: (request: http.I
           browserOpened(named(client));
           changed();
           // Reconnection always reads current work; no lost notification is durable state.
-          client.send('wake');
+          client.send(WAKE_MESSAGES.wake);
         }).catch(() => client.terminate());
       });
     });
   };
   server.on('upgrade', upgrade);
-  const wake = (topic: 'wake' | 'browser-control') => {
+  const wake = (topic: WakeTopic) => {
     for (const client of authorized.keys()) {
       if (client.readyState === WebSocket.OPEN && client.bufferedAmount < 1024) client.send(topic);
       else drop(client, client.readyState === WebSocket.OPEN ? 'its wake messages backed up' : 'its socket was no longer open');
@@ -149,7 +151,7 @@ export function attachBrowserWake(server: http.Server, allowed: (request: http.I
     for (const [client, seen] of authorized) {
       if (Date.now() - seen > 45000) drop(client, `no answer for ${Math.round((Date.now() - seen) / 1000)} s`);
       else if (client.bufferedAmount >= 1024) drop(client, 'its wake messages backed up');
-      else if (client.readyState === WebSocket.OPEN) client.send('ping');
+      else if (client.readyState === WebSocket.OPEN) client.send(WAKE_MESSAGES.ping);
     }
   }, 20000);
   heartbeat.unref();

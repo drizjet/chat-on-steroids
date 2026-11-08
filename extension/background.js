@@ -24,12 +24,13 @@ import { createBrowserControl } from './browser-control.js';
 import { createActiveTabs } from './active-tabs.js';
 // Side-effect import: CLF_I18N serves catalogs to content scripts, which cannot read them.
 import './i18n.js';
+// The Auto port order (the primary range, then two fallback ranges for when Windows reserves
+// 8765-8769, #1314) and the bridge protocol number ship generated from
+// src/shared/browser-bridge.ts and src/main/version.ts; tests fail on drift.
+import { BRIDGE_PROTOCOL, PORTS } from './protocol.js';
 
 const activeTabs = globalThis.chrome?.debugger ? createActiveTabs(chrome) : null;
 
-// The app's Auto order (src/shared/browser-bridge.ts): the primary range, then two fallback ranges
-// for when Windows reserves 8765-8769 (#1314). Refused local ports fail at once, so scanning is cheap.
-const PORTS = [8765, 8766, 8767, 8768, 8769, 18765, 18766, 18767, 18768, 18769, 38765, 38766, 38767, 38768, 38769];
 const HELLO_TIMEOUT_MS = 1200;
 const REQUEST_TIMEOUT_MS = 10_000;
 /**
@@ -55,8 +56,6 @@ const MODEL_REQUEST_TIMEOUT_MS = 190_000;
 
 /** The reason a deadline aborts with, so it is a fact the caller can act on rather than prose. */
 const TIMED_OUT = 'the app took too long to answer';
-/** Bumped only when the request/response shape changes; the app compares it. */
-const BRIDGE_PROTOCOL = 14;
 /** Browser-owned presentation preferences also exposed by the popup. */
 const RENDER_STREAM_KEY = 'renderStreamEnabled';
 const SHOW_TIMES_KEY = 'showStreamTimes';

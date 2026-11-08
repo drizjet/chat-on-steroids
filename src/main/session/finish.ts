@@ -9,6 +9,7 @@ import { isChatBlocked } from './blocked-chats.js';
 import { waitingForSubAgents } from '../agents.js';
 import { draftFastFollowup, conversationMessages, automaticFinishEnabled, goalDrivingMode, goalObjectiveFor, goalProgressFor, onGoalChange } from '../goal.js';
 import { hasEligibleToolInput, finishNeedsBrowserInput, onInputChange, listInputs, enqueueInput } from './input.js';
+import { isPendingState } from '../../shared/input.js';
 
 import { logInfo, logWarn } from '../logger.js';
 import { checkAutomaticSend } from '../send-check.js';
@@ -30,7 +31,7 @@ export function sessionFinishDeadline(startedAt: number): number {
 export async function sessionFinishWaiting(sessionId: string, turnId: string | null | undefined, conversationId: string | null): Promise<boolean> {
   return !!turnId && finishCalls.has(`${sessionId}:${turnId}`) &&
     await sessionFinishHeld(sessionId, turnId, conversationId) &&
-    !(await listInputs()).some(entry => entry.sessionId === sessionId && ['queued', 'browser', 'tool'].includes(entry.state));
+    !(await listInputs()).some(entry => entry.sessionId === sessionId && isPendingState(entry.state));
 }
 const REMAINING = 'Process any user input attached to this result.';
 
@@ -79,7 +80,7 @@ async function prepareNotice(sessionId: string, summary: string, userRequested =
         await sessionFinishHeld(sessionId, turnId, session.conversationId);
     };
     const inputs = await listInputs();
-    if (inputs.some(entry => entry.sessionId === sessionId && ['queued', 'browser', 'tool'].includes(entry.state)))
+    if (inputs.some(entry => entry.sessionId === sessionId && isPendingState(entry.state)))
       return 'Queued user instructions take priority over finish notices and automatic Goal work.';
     let notification = automatic || userRequested ? 'Automatic Goal check.' : 'This turn’s finish notice was already requested; no notification was repeated.';
     if (!userRequested && !automatic && !notified) {
@@ -168,7 +169,7 @@ async function prepareNotice(sessionId: string, summary: string, userRequested =
       });
       if (!(await currentDecision())) result = 'The turn changed or new user instructions took priority; the old Goal follow-up was discarded.';
       else if (reply) {
-        if ((await listInputs()).some(entry => entry.sessionId === sessionId && ['queued', 'browser', 'tool'].includes(entry.state))) {
+        if ((await listInputs()).some(entry => entry.sessionId === sessionId && isPendingState(entry.state))) {
           result = `${notification} New user instructions took priority; the automatic follow-up was discarded.`;
         } else {
           const hash = createHash('sha256').update(`${sessionId}:${progressId}`).digest('hex');
@@ -306,7 +307,7 @@ export async function announceSessionFinish(sessionId: string, summary: string, 
   const key = `${sessionId}:${session.activeTurnId}`;
   finishCalls.set(key, (finishCalls.get(key) ?? 0) + 1);
   try {
-    const queued = (await listInputs()).some(entry => entry.sessionId === sessionId && ['queued', 'browser', 'tool'].includes(entry.state));
+    const queued = (await listInputs()).some(entry => entry.sessionId === sessionId && isPendingState(entry.state));
     const automatic = automaticFinishEnabled(session.conversationId);
     let notice = 'Queued user instructions are ready.';
     if (!queued && automatic) {

@@ -13,6 +13,25 @@ import type { BrowserResult } from '../shared/browser-control.js';
 import { goalErrorKey, goalErrorMessage } from '../shared/goal-errors.js';
 import { MAX_CHATGPT_MESSAGE_CHARS, userPromptText } from '../shared/user-prompt.js';
 import { CONVERSATION_DELETED } from '../shared/chat-error.js';
+import { isAbandonedState, isPendingState, isTerminalState, type InputAutomation } from '../shared/input.js';
+import { type ResumeJobView } from './bridge/resume-stage.js';
+import { createResumeJobs } from './bridge/resume-jobs.js';
+import { diagnosticNumber, diagnosticObject, sanitiseCompanionDiagnostics } from './companion-diagnostics.js';
+import { activityDisplayOutcome, activityDurationMs, activityStoredPreview } from './bridge/activity-view.js';
+import { noteExtensionUpdateHold } from './bridge/extension-update-holds.js';
+import {
+  buildSeenAt, clearExtensionProtocolState, extensionAnnounceDue, extensionBuildOf, noteExtensionBuild,
+  recordExtensionVersion, reportedExtension, versionSeenTimes, STALE_COMPANION_WINDOW_MS
+} from './bridge/extension-protocol.js';
+import {
+  ACCESS_LIMIT_HOLD_MS, activityDeadline, DELIBERATE_SILENCE_MS, noteSilence,
+  PRO_ACTIVITY_MS, PRO_SILENCE_MS, silenceWindowMs
+} from './bridge/repairs.js';
+export {
+  ACCESS_LIMIT_HOLD_MS, DELIBERATE_SILENCE_MS, PRO_ACTIVITY_MS, PRO_SILENCE_MS
+} from './bridge/repairs.js';
+export { noteExtensionUpdateHold };
+export type { ResumeJobView, ResumeStage } from './bridge/resume-stage.js';
 import { prepareSessionPrompt } from './session/prompt.js';
 import { NEW_CHAT, noteAutomaticReply } from './session/automatic-replies.js';
 import { pendingChatModelRequest, observeChatModels, requestChatModels } from './chat-models.js';
@@ -64,16 +83,16 @@ import { inBrowserDelivery, automaticSendKind, heldBySendCheck, holdInputForSend
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
-import type { BridgeStatus, CompanionDiagnostics, CompanionEnvironment, CompanionPageDiagnostics, CompanionTabDiagnostics, CompanionTraceEntry } from '../shared/types.js';
+import type { BridgeStatus, CompanionDiagnostics } from '../shared/types.js';
 import { BROWSER_PICKUP_ATTEMPT_LIMIT, BROWSER_PICKUP_BACKOFF_MS, BROWSER_PICKUP_MAX_ATTEMPTS, BROWSER_PICKUP_SLOW_MS, browserPickupDelay, recoveryBusyMs } from '../shared/recovery.js';
-import { CHAT_ACTIVE_MS, CHAT_SILENCE_MS, continuationMarkerOf, isReasoningEffort, normalizedToolOutcome, toolCallSummary, unescapeMarkdown,
-  type ReasoningEffort, type SessionEvent, type SessionOrigin, type StoredText, type ToolCallRecord } from '../shared/session.js';
+import { CHAT_ACTIVE_MS, CHAT_SILENCE_MS, continuationMarkerOf, isReasoningEffort, toolCallSummary, unescapeMarkdown,
+  type ReasoningEffort, type SessionEvent, type SessionOrigin } from '../shared/session.js';
 import { blockedChatIds, isChatBlocked, chatBlockedAt } from './session/blocked-chats.js';
 export { CHAT_ACTIVE_MS, CHAT_SILENCE_MS } from '../shared/session.js';
 import { effectiveCapabilities, getConfig, updateConfig } from './config.js';
 import { BROWSER_BRIDGE_AUTO_PORTS } from '../shared/browser-bridge.js';
 import { bridgePortSelection } from './bridge-ports.js';
-import { isNewer, type Config } from '../shared/types.js';
+import { type Config } from '../shared/types.js';
 import type { PluginSurface } from '../shared/plugin-refresh.js';
 import { getSecret, secureStorageStatus, setSecret } from './secrets.js';
 import {
@@ -243,8 +262,7 @@ import {
   recoverContinuationFromRecordedBootstrap,
   repairPrimeFromResumeShadow,
   resetContinuationsForTests,
-  sendUnattempted,
-  type ContinuationSendState
+  sendUnattempted
 } from './session/continuation.js';
 import type { ContinuationView } from './session/continuation.js';
 import { noteResumeOpening } from './session/resume-gate.js';
@@ -688,28 +706,7 @@ const commandWrites = new Map<string, Promise<boolean>>();
 const commandRedeems = new Map<string, Promise<void>>();
 let requestWindow = { start: Date.now(), count: 0 };
 const listeners = new Set<() => void>();
-/**
- * The extension version each browser last reported, by its browser id (the CoS browser and a
- * peer without an id share one entry each). Two browsers may run different versions - Firefox
- * updates its add-on on its own schedule - and one shared value followed whichever asked last.
- */
-const extensionVersions = new Map<string, { version: string; engine?: 'gecko'; seenAt: number }>();
-/**
- * When each (version, build) pair was last announced. Two browsers with the extension installed
- * alternate requests, and a single "current" pair would turn every alternation into a fresh
- * "connected" line, a repeated mismatch warning and a renderer push: measured 2026-09-26, a
- * normal and a debugging Chrome on different builds wrote ~80 of each per minute for an hour.
- */
-const announcedExtensions = new Map<string, number>();
-const EXTENSION_ANNOUNCE_MS = 30 * 60_000;
-/** When each extension build last made a request, to tell a stale companion from a lone one. */
-const extensionBuildSeenAt = new Map<string, number>();
-const STALE_COMPANION_WINDOW_MS = 60_000;
 
-function extensionBuildOf(req: http.IncomingMessage): string | null {
-  const build = req.headers['x-extension-build'];
-  return typeof build === 'string' && /^[0-9a-f]{12}$/.test(build) ? build : null;
-}
 
 /**
  * Whether this request comes from an out-of-date companion while an up-to-date one is present.
@@ -730,7 +727,7 @@ function staleCompanion(req: http.IncomingMessage): boolean {
   const stamp = extensionBuildOf(req);
   const shipped = shippedExtensionBuild();
   if (!stamp || !shipped || stamp === shipped) return false;
-  const current = extensionBuildSeenAt.get(shipped);
+  const current = buildSeenAt(shipped);
   return current !== undefined && Date.now() - current < STALE_COMPANION_WINDOW_MS;
 }
 /**
@@ -947,164 +944,12 @@ let latestCompanionDiagnosticsAt = 0;
 let companionDiagnosticsRevision = 0;
 const companionDiagnosticsWaiters = new Set<() => void>();
 
-function diagnosticObject(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function diagnosticString(value: unknown, max = 512): string | null {
-  return typeof value === 'string' ? value.slice(0, max) : null;
-}
-
-function diagnosticNumber(value: unknown, max = Number.MAX_SAFE_INTEGER): number {
-  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(max, value)) : 0;
-}
-
-function diagnosticNullableNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-function diagnosticTrace(value: unknown): CompanionTraceEntry[] {
-  if (!Array.isArray(value)) return [];
-  return value.slice(0, 16).flatMap((entry) => {
-    const row = diagnosticObject(entry);
-    const requestId = diagnosticString(row?.requestId, 160);
-    if (!row || !requestId) return [];
-    return [{
-      requestId,
-      read: row.read === true,
-      sent: row.sent === true,
-      confirmed: row.confirmed === true,
-      app: diagnosticString(row.app, 80),
-      tool: diagnosticString(row.tool, 160)
-    }];
-  });
-}
-
-function diagnosticPage(value: unknown): CompanionPageDiagnostics | null {
-  const page = diagnosticObject(value);
-  if (!page) return null;
-  const lastError = diagnosticObject(page.lastError);
-  return {
-    recorderVersion: diagnosticNullableNumber(page.recorderVersion),
-    runId: diagnosticString(page.runId, 160),
-    conversationId: diagnosticString(page.conversationId, 200),
-    generating: page.generating === true,
-    turnId: diagnosticString(page.turnId, 200),
-    generations: diagnosticNumber(page.generations, 1_000_000),
-    queued: diagnosticNumber(page.queued, 1_000_000),
-    queueBytes: diagnosticNumber(page.queueBytes, 64 * 1024 * 1024),
-    requestId: diagnosticString(page.requestId, 160),
-    trace: diagnosticTrace(page.trace),
-    overwrite: page.overwrite === true,
-    painted: page.painted === true,
-    events: diagnosticNumber(page.events, 10_000_000),
-    calls: diagnosticNumber(page.calls, 10_000_000),
-    sends: diagnosticNumber(page.sends, 10_000_000),
-    failures: diagnosticNumber(page.failures, 10_000_000),
-    session: diagnosticString(page.session, 160),
-    lastError: lastError && typeof lastError.at === 'number' && Number.isFinite(lastError.at)
-      ? { at: lastError.at, text: diagnosticString(lastError.text, 500) ?? '' }
-      : null,
-    blocked: diagnosticString(page.blocked, 160)
-  };
-}
-
-function diagnosticTab(value: unknown): CompanionTabDiagnostics | null {
-  const tab = diagnosticObject(value);
-  if (!tab) return null;
-  const delivery = diagnosticObject(tab.delivery);
-  return {
-    tab: diagnosticNullableNumber(tab.tab),
-    isChat: tab.isChat === true,
-    conversationId: diagnosticString(tab.conversationId, 200),
-    bound: tab.bound === true,
-    epoch: diagnosticNullableNumber(tab.epoch),
-    terminal: tab.terminal === true,
-    recorder: tab.recorder === true,
-    page: diagnosticPage(tab.page),
-    chatTabs: diagnosticNumber(tab.chatTabs, 10_000),
-    pending: diagnosticNumber(tab.pending, 1_000_000),
-    pendingAll: diagnosticNumber(tab.pendingAll, 1_000_000),
-    pendingCloses: diagnosticNumber(tab.pendingCloses, 1_000_000),
-    pendingCommandAcks: diagnosticNumber(tab.pendingCommandAcks, 1_000_000),
-    delivery: {
-      at: diagnosticNumber(delivery?.at),
-      ok: delivery?.ok === true ? true : delivery?.ok === false ? false : null,
-      events: diagnosticNumber(delivery?.events, 1_000_000),
-      total: diagnosticNumber(delivery?.total, 100_000_000),
-      status: diagnosticNumber(delivery?.status, 999),
-      error: diagnosticString(delivery?.error, 200)
-    }
-  };
-}
-
 /** The extension's own preferences, kept so a reinstalled extension gets them back (see /status). */
 function rememberBrowserPreferences(preferences: { overwrite: boolean; durations: boolean }): void {
   const kept = getConfig().ui.browserPreferences;
   if (kept?.overwrite === preferences.overwrite && kept?.durations === preferences.durations) return;
   void updateConfig(config => ({ ...config, ui: { ...config.ui, browserPreferences: { overwrite: preferences.overwrite, durations: preferences.durations } } }))
     .catch(error => logWarn(`bridge: could not keep the extension preferences: ${(error as Error).message}`));
-}
-
-function sanitiseCompanionDiagnostics(value: unknown): CompanionDiagnostics | null {
-  const root = diagnosticObject(value);
-  const status = diagnosticObject(root?.status);
-  const preferences = diagnosticObject(root?.preferences);
-  if (!root || !status || !preferences) return null;
-  const pairError = diagnosticObject(status.pairError);
-  return {
-    capturedAt: diagnosticNumber(root.capturedAt),
-    status: {
-      connected: status.connected === true,
-      port: diagnosticNullableNumber(status.port),
-      paired: status.paired === true,
-      disconnected: status.disconnected === true,
-      pending: diagnosticNumber(status.pending, 1_000_000),
-      pendingCommandAcks: diagnosticNumber(status.pendingCommandAcks, 1_000_000),
-      compatible: status.compatible === true ? true : status.compatible === false ? false : null,
-      appVersion: diagnosticString(status.appVersion, 32),
-      appProtocol: diagnosticNullableNumber(status.appProtocol),
-      extensionVersion: diagnosticString(status.extensionVersion, 32),
-      extensionProtocol: diagnosticNullableNumber(status.extensionProtocol),
-      pairError: pairError
-        ? { error: diagnosticString(pairError.error, 160) ?? '', message: diagnosticString(pairError.message, 500) ?? '' }
-        : null
-    },
-    preferences: {
-      overwrite: preferences.overwrite !== false,
-      durations: preferences.durations === true
-    },
-    tab: diagnosticTab(root.tab),
-    environment: diagnosticEnvironment(root.environment),
-    language: diagnosticLanguage(root.language)
-  };
-}
-
-const LANGUAGE_TAG = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/;
-function diagnosticLanguage(value: unknown): CompanionDiagnostics['language'] {
-  const root = diagnosticObject(value);
-  if (!root) return null;
-  const tag = (field: unknown) => typeof field === 'string' && LANGUAGE_TAG.test(field) ? field : null;
-  return { applied: tag(root.applied), stored: tag(root.stored), error: diagnosticString(root.error, 200) };
-}
-
-function diagnosticEnvironment(value: unknown): CompanionEnvironment | null {
-  const root = diagnosticObject(value);
-  const browser = diagnosticObject(root?.browser), tabs = diagnosticObject(root?.tabs), page = diagnosticObject(root?.page);
-  if (!root || !browser || !tabs) return null;
-  const name = diagnosticString(browser.name, 40), version = diagnosticString(browser.version, 32);
-  const count = (key: string) => Math.round(diagnosticNumber(tabs[key], 100_000));
-  return {
-    browser: { name: name && /^[A-Za-z0-9 ._-]{1,40}$/.test(name) ? name : 'unknown', version: version && /^[0-9][0-9.]*$/.test(version) ? version : null },
-    tabs: { open: count('open'), discarded: count('discarded'), frozen: count('frozen'), loading: count('loading'), grouped: count('grouped'),
-      inBackgroundWindow: count('inBackgroundWindow') },
-    page: page ? {
-      composer: page.composer === true, sendArea: page.sendArea === true, modelMenu: page.modelMenu === true, plusMenu: page.plusMenu === true,
-      language: typeof page.language === 'string' && /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(page.language) ? page.language : null
-    } : null
-  };
 }
 
 /** Per browser: the extension language state last logged, so a repeating report logs once. */
@@ -1245,7 +1090,7 @@ function geckoExtension(req: http.IncomingMessage): boolean {
 }
 
 function versionStatus(): Pick<BridgeStatus, 'extensionVersion' | 'extensionEngine'> {
-  const reported = reportedExtension();
+  const reported = reportedExtension(BROWSER_PRESENT_MS);
   return { extensionVersion: reported?.version ?? null, ...(reported?.engine ? { extensionEngine: reported.engine } : {}) };
 }
 
@@ -1355,7 +1200,7 @@ function scheduleBrowserPresence(): void {
   const now = Date.now();
   // A browser's version entry ages out too, and the reported version may change with it.
   const deadlines = [lastSeenAt, externalExtension?.seenAt ?? null, externalExtension?.loginAt ?? null, cosExtensionSeenAt,
-    ...[...extensionVersions.values()].map(entry => entry.seenAt)]
+    ...versionSeenTimes()]
     .filter((at): at is number => at !== null && at + BROWSER_PRESENT_MS > now)
     .map(at => at + BROWSER_PRESENT_MS);
   if (!server || deadlines.length === 0) return;
@@ -1475,85 +1320,21 @@ function protocolCompatible(req: http.IncomingMessage): boolean {
   return extensionProtocol(req) === BRIDGE_PROTOCOL;
 }
 
-/** Why the extension has not yet reloaded into the build this app ships, in the log's words. */
-const EXTENSION_UPDATE_HOLDS: Record<string, string> = {
-  'app-busy': 'a tool call is running in this app',
-  sending: 'a message is being sent',
-  commands: 'a browser command is still pending',
-  'chat-busy': 'a ChatGPT tab is still answering',
-  'already-tried': 'it already tried this update once; reload it in chrome://extensions',
-  'folder-not-ready': 'its folder does not hold the new build yet',
-  'browser-updates-itself': 'Firefox updates the signed add-on itself (about:addons → Check for Updates)'
-};
-/**
- * The hold last logged per browser, for the build this app ships. With two browsers reporting in turn,
- * one shared value made the browser without a hold reset the other's (2.1.39). A report without a hold
- * no longer resets it either: Firefox suspends the add-on between polls, each wake first reported no
- * hold, and the same reason was logged 907 times in 36 hours (VM, 2026-10-21).
- */
-const extensionUpdateHoldLogged = new Map<string, { reason: string; build: string | null; at: number }>();
-/** The same reason is said again after this long, so a long wait still shows in a recent log. */
-const EXTENSION_UPDATE_HOLD_RELOG_MS = 6 * 60 * 60_000;
 
-/** Logs once per browser and shipped build why an offered extension update is waiting, again when the reason changes. */
-export function noteExtensionUpdateHold(hold: unknown, browser: string | null = null): void {
-  const reason = typeof hold === 'string' && Object.hasOwn(EXTENSION_UPDATE_HOLDS, hold) ? hold : null;
-  if (!reason) return;
-  const key = browser ?? '';
-  const build = shippedExtensionBuild();
-  const last = extensionUpdateHoldLogged.get(key);
-  const now = Date.now();
-  if (last && last.reason === reason && last.build === build && now - last.at < EXTENSION_UPDATE_HOLD_RELOG_MS) return;
-  extensionUpdateHoldLogged.delete(key);
-  extensionUpdateHoldLogged.set(key, { reason, build, at: now });
-  if (extensionUpdateHoldLogged.size > 16) extensionUpdateHoldLogged.delete(extensionUpdateHoldLogged.keys().next().value!);
-  logInfo(`bridge: the browser extension waits to update: ${EXTENSION_UPDATE_HOLDS[reason]}`);
-}
-
-/**
- * The version the app reports: the oldest among browsers heard from recently, so an outdated copy
- * keeps its notice while a current one polls too. With none recent, the last one heard from: a
- * mismatched companion can fail the protocol gate before it ever counts as present.
- */
-function reportedExtension(): { version: string; engine?: 'gecko' } | null {
-  const now = Date.now();
-  let oldest: { version: string; engine?: 'gecko'; seenAt: number } | null = null;
-  let latest: { version: string; engine?: 'gecko'; seenAt: number } | null = null;
-  for (const entry of extensionVersions.values()) {
-    if (!latest || entry.seenAt >= latest.seenAt) latest = entry;
-    if (now - entry.seenAt < BROWSER_PRESENT_MS && (!oldest || isNewer(oldest.version, entry.version))) oldest = entry;
-  }
-  const chosen = oldest ?? latest;
-  return chosen && { version: chosen.version, ...(chosen.engine ? { engine: chosen.engine } : {}) };
-}
 
 function noteExtensionVersion(req: http.IncomingMessage): void {
   const version = req.headers['x-extension-version'];
   const protocol = extensionProtocol(req);
   const stamp = extensionBuildOf(req);
-  if (stamp) {
-    extensionBuildSeenAt.delete(stamp);
-    extensionBuildSeenAt.set(stamp, Date.now());
-    if (extensionBuildSeenAt.size > 16) extensionBuildSeenAt.delete(extensionBuildSeenAt.keys().next().value!);
-  }
+  if (stamp) noteExtensionBuild(stamp);
   if (typeof version !== 'string') return warnProtocol(protocol);
   const externalChanged = req.headers['x-extension-host'] === 'browser' && externalExtension?.version !== version.slice(0, 32) && !keepsExternalRecord(req);
   if (externalChanged) externalExtension = { version: version.slice(0, 32), seenAt: null };
   const extensionVersion = version.slice(0, 32);
-  const before = reportedExtension();
   const source = browserOf(req) ?? (req.headers['x-extension-host'] === 'cos' ? 'cos' : 'unknown');
-  extensionVersions.delete(source);
-  extensionVersions.set(source, { version: extensionVersion, ...(geckoExtension(req) ? { engine: 'gecko' as const } : {}), seenAt: Date.now() });
-  if (extensionVersions.size > 16) extensionVersions.delete(extensionVersions.keys().next().value!);
-  const after = reportedExtension();
-  const reportChanged = before?.version !== after?.version || before?.engine !== after?.engine;
+  const reportChanged = recordExtensionVersion(source, { version: extensionVersion, ...(geckoExtension(req) ? { engine: 'gecko' as const } : {}), seenAt: Date.now() }, BROWSER_PRESENT_MS);
   scheduleBrowserPresence();
-  const key = `${extensionVersion}\u0000${stamp ?? ''}`;
-  const announcedAt = announcedExtensions.get(key);
-  if (announcedAt === undefined || Date.now() - announcedAt >= EXTENSION_ANNOUNCE_MS) {
-    announcedExtensions.delete(key);
-    announcedExtensions.set(key, Date.now());
-    if (announcedExtensions.size > 16) announcedExtensions.delete(announcedExtensions.keys().next().value!);
+  if (extensionAnnounceDue(extensionVersion, stamp)) {
     logInfo(`bridge: browser extension ${extensionVersion} connected${stamp ? ` (build ${stamp})` : ''}`);
     // Chrome answers "which manifest did I load" with the version and keeps running whatever
     // service worker it already had, so an extension folder replaced under a live browser
@@ -2077,94 +1858,6 @@ function conversationId(value: unknown): string | null {
 }
 
 const MAX_ACTIVITY_CALL_ID_CHARS = 200;
-const MAX_ACTIVITY_DETAIL_TEXT_CHARS = 8_000;
-const BINARY_OMISSION = (chars: number): string => `<binary payload omitted: ${chars} characters>`;
-
-/** Browser-facing status from canonical stored evidence, never inferred by the content script. */
-function activityDisplayOutcome(call: ToolCallRecord): { code: string; label: string; exitCode?: number | null } {
-  const process = call.process;
-  if (process) {
-    if (process.completedAt === undefined) return { code: 'started', label: 'started' };
-    if (typeof process.exitCode !== 'number' || !Number.isFinite(process.exitCode)) {
-      return { code: 'finished', label: 'finished · exit unknown', exitCode: null };
-    }
-    if (process.exitCode !== 0) return { code: 'failed', label: `failed · exit ${process.exitCode}`, exitCode: process.exitCode };
-    return { code: 'completed', label: 'completed', exitCode: 0 };
-  }
-  const normalized = normalizedToolOutcome(call);
-  if (normalized === 'ok') return { code: 'completed', label: 'completed' };
-  if (normalized === 'tool_rejected') return { code: 'refused', label: 'refused' };
-  if (normalized === 'tool_internal_error') return { code: 'internal_error', label: 'internal error' };
-  if (normalized === 'tool_execution_error') return { code: 'failed', label: 'failed' };
-  if (normalized === 'process_exit_nonzero') {
-    const exit = /^✕ exit (-?\d+)$/.exec(call.summary.metric ?? '');
-    return exit ? { code: 'failed', label: `failed · exit ${exit[1]}`, exitCode: Number(exit[1]) }
-      : { code: 'failed', label: 'failed' };
-  }
-  return { code: 'unknown', label: 'unknown' };
-}
-
-function activityDurationMs(call: ToolCallRecord): number | null {
-  const duration = call.process?.completedAt !== undefined ? call.process.durationMs : call.durationMs;
-  return typeof duration === 'number' && Number.isFinite(duration) && duration >= 0 ? duration : null;
-}
-
-/** Removes binary payloads from the already-redacted stored copy without mutating history. */
-function scrubActivityDetailBinary(text: string): string {
-  const replace = (value: string): string => BINARY_OMISSION(value.length);
-  return text
-    // Both forms deliberately accept end-of-preview in place of a closing quote. StoredText
-    // prefixes are cut before this projection, so requiring a terminator leaks the final
-    // partial binary field precisely when its full body was already bounded away.
-    .replace(/data:[^;,\s"']{1,100};base64,[a-z0-9+/=\r\n]+/gi, replace)
-    .replace(/(["'](?:data|blob|dataBase64)["']\s*:\s*)(["'])([\s\S]*?)(\2|$)/gi,
-      (_all, head: string, quote: string, payload: string, tail: string) =>
-        `${head}${quote}${BINARY_OMISSION(payload.length)}${tail}`)
-    // An unlabelled long base64 body still needs removal, but ordinary long prose made only
-    // of letters must remain readable. Punctuation/padding is the distinguishing evidence.
-    .replace(/(?=[a-z0-9+/=]{256,})(?=[a-z0-9+/=]*[+/=])[a-z0-9+/]{256,}={0,2}/gi, replace);
-}
-
-/** Keep readable MCP text/resource text while omitting image/audio/blob bodies. */
-function readableActivityResult(text: string): string {
-  const scrubbed = scrubActivityDetailBinary(text);
-  try {
-    const value = JSON.parse(scrubbed) as { content?: unknown[]; structuredContent?: unknown };
-    if (value && Array.isArray(value.content)) {
-      const readable: string[] = [];
-      const scrubbedMarker = /<binary payload omitted: \d+ characters>/.exec(scrubbed)?.[0] ?? null;
-      let omittedBinary = scrubbedMarker !== null;
-      for (const block of value.content as Array<Record<string, unknown>>) {
-        if (block?.type === 'text' && typeof block.text === 'string') readable.push(block.text);
-        else if (block?.type === 'resource' && block.resource && typeof block.resource === 'object' &&
-            typeof (block.resource as { text?: unknown }).text === 'string') {
-          readable.push((block.resource as { text: string }).text);
-        } else if (block && ['image', 'audio', 'resource'].includes(String(block.type ?? ''))) omittedBinary = true;
-      }
-      if (readable.length || omittedBinary) {
-        if (omittedBinary) readable.push(scrubbedMarker ?? '<binary payload omitted>');
-        return readable.join('\n\n');
-      }
-      if (value.structuredContent !== undefined) return scrubActivityDetailBinary(JSON.stringify(value.structuredContent, null, 2));
-    }
-  } catch {
-    // A bounded overflow prefix can end mid-JSON. The regex scrub above remains authoritative.
-  }
-  return scrubbed;
-}
-
-function activityStoredPreview(stored: StoredText, result = false): { text: string; truncated: boolean; chars: number } {
-  const chars = Number.isFinite(stored.chars) && stored.chars >= 0 ? Math.floor(stored.chars) : stored.text.length;
-  // A truncated StoredText appends an internal overflow-asset suffix after the original 8k
-  // prefix. Slice first so the browser never receives that local asset identity or promise.
-  const inline = stored.text.slice(0, MAX_ACTIVITY_DETAIL_TEXT_CHARS);
-  const readable = result ? readableActivityResult(inline) : scrubActivityDetailBinary(inline);
-  return {
-    text: readable.slice(0, MAX_ACTIVITY_DETAIL_TEXT_CHARS),
-    truncated: stored.truncated === true || stored.text.length > MAX_ACTIVITY_DETAIL_TEXT_CHARS || readable.length > MAX_ACTIVITY_DETAIL_TEXT_CHARS,
-    chars
-  };
-}
 
 /**
  * May the goal loop write the next message in this chat?
@@ -2214,7 +1907,7 @@ export type SessionControlsView = {
   recovery?: import('../shared/recovery.js').RecoveryCountdown[];
   plan: import('../shared/agent-plan.js').AgentPlan | null;
   conversationId: string;
-  automation: 'off' | 'goal' | 'loop';
+  automation: InputAutomation;
   loopAfterTurn?: boolean;
   proLoopDelivery?: boolean;
   objective: string;
@@ -3081,7 +2774,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         pluginRefreshRequests: otherBrowser ? [] : (await authorizedPluginRefreshPublications(getConfig().ui.autoRefreshPlugins === true)).map(({ surface, schemaId, connectorName }) => ({ surface, schemaId, connectorName })),
         browserPreferenceRequest: pendingBrowserPreferenceRequest(),
         projectCreateRequests: otherBrowser ? [] : await pendingProjectCreates(),
-        inputOpeningIds: inputRows.filter(row => !['sent', 'failed', 'cancelled'].includes(row.state)).map(row => row.id),
+        inputOpeningIds: inputRows.filter(row => !isTerminalState(row.state)).map(row => row.id),
         // The ones being sent right now (handed to a browser), not those that only wait in the queue:
         // only these hold the extension's self-update (a blocked chat can keep a queued one for hours).
         inputSendingIds: inputRows.filter(inBrowserDelivery).map(row => row.id),
@@ -3090,7 +2783,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         inputs: [...pendingInputs.filter(input => !refusedAsStale && (!input.conversationId || input.directTurn || runningToolCalls(input.conversationId) === 0) &&
             (!input.conversationId || !tunnelRouteSettling()) &&
             !inputHeldElsewhere(input, browser, chosenBuiltIn)),
-          ...inputRows.filter(row => row.lifetime === 'temporary-planner' && ['sent', 'cancelled', 'failed'].includes(row.state))
+          ...inputRows.filter(row => row.lifetime === 'temporary-planner' && isTerminalState(row.state))
             // After Send, ChatGPT moves a helper to /c/<id>?temporary-chat=true without its cos-input
             // marker; its chat is the only way a later close pass can find that tab again.
             .map(row => ({ id: row.id, owner: row.owner, lifetime: row.lifetime, close: true,
@@ -3098,7 +2791,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           // A new chat's first message ended before Send was ever authorized, so nothing reached
           // ChatGPT. The tab opened for it showed only the start page and stayed open for good
           // (2.1.40 release round); the extension closes it once that page proves it untouched.
-          ...(otherBrowser ? [] : inputRows.filter(row => row.opening === true && ['cancelled', 'failed'].includes(row.state) &&
+          ...(otherBrowser ? [] : inputRows.filter(row => row.opening === true && isAbandonedState(row.state) &&
             row.sendAuthorizedAt === undefined && row.deliveredAt === undefined && !row.conversationId &&
             Date.now() - row.createdAt < CANCELLED_OPENING_CLOSE_MS)
             .map(row => ({ id: row.id, conversationId: null, opening: true, close: true })))],
@@ -6844,106 +6537,21 @@ function queue(spec: CommandSpec): Command {
 }
 
 // --------------------------------------------------------------- resume jobs
+// Stage types and mapping live in ./bridge/resume-stage.ts; only the token cache and the job
+// assembly stay here.
 
-/**
- * One press of Compact & Resume, followed from the press to the fresh chat.
- *
- * The button used to be fire-and-forget, and the browser half guessed when it was done
- * by waiting a second and a half. A real compaction runs for minutes, so the user got an
- * enabled button back long before anything happened, pressed it again, and every press
- * became its own handoff and its own fresh tab — tabs that then arrived minutes later,
- * several at once. The job is the thing the page waits on instead of guessing: one per
- * session, from the press until the fresh chat has actually been opened, failed or been
- * cancelled.
- */
-export type ResumeStage =
-  /** ChatGPT was asked for the brief and has not finished writing it yet. */
-  | 'handoff-pending'
-  | 'opening'
-  | 'waiting-for-browser'
-  | 'done'
-  | 'failed';
-
-/**
- * What the page is told about a Compact & Resume in flight.
- *
- * Derived, never stored. The continuation transaction is the state — it knows whether a
- * brief exists, whether a replacement chat has claimed it and whether the move landed — and
- * this reads it, adding only the one thing the transaction cannot know: whether the browser
- * has actually been given the command yet. A job record of its own was a second copy of that
- * state, and the two could disagree about whether a session had moved.
- */
-export interface ResumeJobView {
-  sessionId: string;
-  token: string;
-  stage: ResumeStage;
-  startedAt: number;
-  /** True only for a threshold-triggered ticket; Auto Off may cancel only these. */
-  automatic: boolean;
-  /** True while the button must stay disabled. */
-  busy: boolean;
-  handoffId: string | null;
-  sourceSend: {
-    state: ContinuationSendState;
-    messageId: string | null;
-  };
-  destinationSend: {
-    state: ContinuationSendState;
-    conversationId: string | null;
-    messageId: string | null;
-  };
-  error: string | null;
-}
-
-const RUNNING_STAGES = new Set<ResumeStage>(['handoff-pending', 'opening', 'waiting-for-browser']);
-
-/**
- * The token of the last continuation opened for a session.
- *
- * The transaction itself is the state; this is only how the bridge finds it again, and it is
- * how a *finished* one can still be reported once — `continuationForSession` answers about
- * open transactions only, which is right for everything that acts on one, but a page polling
- * every two seconds still has to be told "that finished" rather than "there is nothing".
- */
-const sessionTokens = new Map<string, string>();
-
-function rememberToken(sessionId: string, token: string): void {
-  sessionTokens.set(sessionId, token);
-  if (sessionTokens.size > 50) {
-    const oldest = sessionTokens.keys().next();
-    if (!oldest.done) sessionTokens.delete(oldest.value);
+/** Resume jobs: the token cache and the view assembly live in ./bridge/resume-jobs.ts. */
+const resumeJobs = createResumeJobs({
+  continuationByToken,
+  continuationForSession,
+  browserWaiting: (sessionId) => {
+    const command = commands.find((cmd) => cmd.spec.type === 'resume' && cmd.spec.sessionId === sessionId);
+    return Boolean(command && !isLeased(command) && !openInBrowser);
   }
-}
-
-/** The job for a session, if there is one worth telling the page about. */
-export function resumeJobFor(sessionId: string): ResumeJobView | null {
-  const token = sessionTokens.get(sessionId);
-  const entry = (token ? continuationByToken(token) : null) ?? continuationForSession(sessionId);
-  if (!entry) return null;
-  const command = commands.find((cmd) => cmd.spec.type === 'resume' && cmd.spec.sessionId === sessionId);
-  const stage: ResumeStage =
-    entry.state === 'committed'
-      ? 'done'
-      : entry.state === 'aborted'
-        ? 'failed'
-        : entry.state === 'awaiting-summary'
-          ? 'handoff-pending'
-          : command && !isLeased(command) && !openInBrowser
-            ? 'waiting-for-browser'
-            : 'opening';
-  return {
-    sessionId,
-    token: entry.token,
-    stage,
-    startedAt: entry.openedAt,
-    automatic: entry.automatic,
-    busy: RUNNING_STAGES.has(stage),
-    handoffId: entry.handoffId,
-    sourceSend: entry.sourceSend,
-    destinationSend: entry.destinationSend,
-    error: entry.error
-  };
-}
+});
+const resumeJobFor = resumeJobs.forSession;
+const rememberToken = resumeJobs.remember;
+export { resumeJobFor };
 
 /**
  * The context-window settings the composer needs, as one object.
@@ -6978,7 +6586,7 @@ function contextView(autoAllowed = true): {
  * attached to the chat it is in.
  */
 export function cancelResume(sessionId: string): boolean {
-  const token = sessionTokens.get(sessionId);
+  const token = resumeJobs.tokenFor(sessionId);
   const entry = token ? continuationByToken(token) : continuationForSession(sessionId);
   const aborted = entry ? abortContinuation(entry.token, 'cancelled') : false;
   const queued = commands.find((command) => command.spec.type === 'resume' && command.spec.sessionId === sessionId);
@@ -7007,7 +6615,7 @@ export function cancelResume(sessionId: string): boolean {
  * safe: restoreCommands refuses a resume whose authoritative continuation is already aborted.
  */
 export async function cancelResumeNow(sessionId: string): Promise<boolean> {
-  const token = sessionTokens.get(sessionId);
+  const token = resumeJobs.tokenFor(sessionId);
   const entry = token ? continuationByToken(token) : continuationForSession(sessionId);
   const queued = commands.find((command) => command.spec.type === 'resume' && command.spec.sessionId === sessionId) ?? null;
 
@@ -7706,32 +7314,6 @@ export function recoveryHeldByCalls(conversationId: string): boolean {
   const since = grant ? unknownCallHold.get(grant) : undefined;
   return since === undefined || Date.now() - since < UNKNOWN_CALL_HOLD_MS;
 }
-/** How long a provider access limit with no Retry-After holds the silence watch ("wait a few minutes"). */
-export const ACCESS_LIMIT_HOLD_MS = 5 * 60_000;
-export const PRO_SILENCE_MS = 10 * 60_000;
-export const PRO_ACTIVITY_MS = 10 * 60_000;
-/**
- * Silence recovery for a non-Pro turn at `xhigh`, `max` or `ultra` (#786).
- *
- * Longer than Pro's ten minutes on purpose: such a turn can think for more than ten minutes
- * without touching the page, and a reload at Pro's boundary interrupts it. Still bounded, so a
- * genuinely dead page is recovered. It is a silence window only; `model` stays `other`.
- */
-export const DELIBERATE_SILENCE_MS = 20 * 60_000;
-
-/** Failure shortens Pro silence; it never counts as new model work. */
-function silenceWindowMs(grant: Pick<ActivityGrant, 'model' | 'thinkingFailed' | 'deliberate'>): number {
-  if (grant.model === 'pro') return grant.thinkingFailed ? 5 * 60_000 : PRO_SILENCE_MS;
-  // A turn thinking above high effort is quiet for minutes between tool calls, and two
-  // minutes of that used to buy it a reload that killed the stream. See `deliberate`.
-  // Thinking failed proves the thinking is over, so it keeps the ordinary window.
-  return grant.deliberate && !grant.thinkingFailed ? DELIBERATE_SILENCE_MS : CHAT_SILENCE_MS;
-}
-
-/** Display can outlive the silence deadline without granting a browser action. */
-function activityDeadline(grant: Pick<ActivityGrant, 'model' | 'evidenceAt'>): number {
-  return grant.evidenceAt + (grant.model === 'pro' ? PRO_ACTIVITY_MS : CHAT_ACTIVE_MS);
-}
 
 /** Runtime presentation of the same exact Pro work grant that owns silence recovery. */
 export function sessionInputActivity(summary: SessionSummary): InputActivity {
@@ -8211,7 +7793,7 @@ export function unattributedRepairEta(now = Date.now(), requestId?: string | nul
  */
 export async function recoveryStoppedChats(rows?: readonly import('./session/input.js').InputEntry[]): Promise<string[]> {
   const inputs = rows ?? await listInputs();
-  const pending = new Set(inputs.flatMap(row => row.sessionId && ['queued', 'browser', 'tool'].includes(row.state) ? [row.sessionId] : []));
+  const pending = new Set(inputs.flatMap(row => row.sessionId && isPendingState(row.state) ? [row.sessionId] : []));
   const candidates = new Set<string>();
   for (const row of inputs) {
     if (row.sessionId && pending.has(row.sessionId) && (row.pickupRecovery?.stoppedAt ||
@@ -9626,7 +9208,6 @@ function browserRecoveryMonitoring(): boolean {
  * a log that simply stopped: the 2026-10-05 report showed a confirmed error reload and then
  * seventeen quiet minutes. Repeated sweeps of the same grant say nothing new.
  */
-const silenceNotes = new Set<string>();
 
 /**
  * Whether the answer this turn belongs to made a recorded local call. A page reloaded after a lost
@@ -9645,13 +9226,6 @@ async function answerHasMcpCall(sessionId: string, conversationId: string, turnI
         await turnHasMcpCall(sessionId, conversationId, id)) return true;
   }
   return false;
-}
-function noteSilence(conversationId: string, grant: ActivityGrant, reason: string): void {
-  const key = `${conversationId}:${grant.turnId ?? '-'}:${grant.sessionId}:${reason}`;
-  if (silenceNotes.has(key)) return;
-  silenceNotes.add(key);
-  if (silenceNotes.size > 500) for (const old of [...silenceNotes].slice(0, 100)) silenceNotes.delete(old);
-  logInfo(`bridge: silence recovery for ${conversationId} — ${reason}`);
 }
 
 /**
@@ -12596,7 +12170,7 @@ export function resetBridgeForTests(): void {
   pickupWatchFloor = Date.now();
   compactionWatchFloor = pickupWatchFloor;
   resetContinuationsForTests();
-  sessionTokens.clear();
+  resumeJobs.clear();
   openInBrowser = null;
   if (browserLaunchTimer) clearTimeout(browserLaunchTimer);
   browserLaunchTimer = null;
@@ -12609,12 +12183,11 @@ export function resetBridgeForTests(): void {
   for (const entry of pendingReveals.splice(0)) entry.settle(false);
   pendingFollow = null;
   openingCustody.clear();
-  extensionVersions.clear();
+  clearExtensionProtocolState();
   externalExtension = null;
   cosExtensionSeenAt = null;
   resetBrowserProofForTests();
-  announcedExtensions.clear();
-  extensionBuildSeenAt.clear();
+
   versionWarned = false;
   requestWindow = { start: Date.now(), count: 0 };
 }

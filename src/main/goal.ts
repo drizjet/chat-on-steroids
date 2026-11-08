@@ -173,6 +173,15 @@ export const REQUEST_TIMEOUT_MS = 180_000;
  */
 const SETTLED_FAILURE = /^(?:auth_rejected|out_of_credit|unknown_model|http_409|http_422|no_api_key|no_conversation|no_objective|invalid_provider|goal_marker_missing|goal_browser_cancelled|goal_browser_send_unconfirmed|goal_browser_send_failed|goal_helper_stop_unverified)(?:$|:)/;
 
+/**
+ * The two HTTP statuses whose refusal must survive a restart as a settled failure.
+ * Kept beside SETTLED_FAILURE (which already counts them) so the extraction cannot drift.
+ */
+const SETTLED_HTTP_FAILURE = /^(http_409|http_422)(?:$|:)/;
+function settledHttpFailure(error: string): 'http_409' | 'http_422' | undefined {
+  return SETTLED_HTTP_FAILURE.exec(error)?.[1] as 'http_409' | 'http_422' | undefined;
+}
+
 /** One failure classification shared by ordinary drafts and the conversation-less opening request. */
 function retryableGoalFailure(error: string): boolean {
   return !SETTLED_FAILURE.test(error);
@@ -2296,9 +2305,9 @@ async function run(draft: GoalDraft): Promise<void> {
     // Logged like the exception path below. Ten rate limits in a row on 2026-09-02 left no
     // trace in app.log because a provider's refusal is an answer, not an exception.
     if (decision.action === 'http' || decision.action === 'invalid') {
-      const settledHttpFailure = /^(http_409|http_422)(?:$|:)/.exec(decision.error)?.[1] as 'http_409' | 'http_422' | undefined;
-      if (draft.backend === 'api' && settledHttpFailure) {
-        await markGoalReplyHttpFailure(draft, settledHttpFailure);
+      const httpFailure = settledHttpFailure(decision.error);
+      if (draft.backend === 'api' && httpFailure) {
+        await markGoalReplyHttpFailure(draft, httpFailure);
         if (draft.acknowledged || drafts.get(draft.conversationId) !== draft) return;
       }
       if (decision.error === 'reply_too_long') tooLongReplies.add(draft.conversationId);

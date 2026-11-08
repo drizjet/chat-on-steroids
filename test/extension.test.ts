@@ -13,6 +13,7 @@ import vm from 'node:vm';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 const { APP_VERSION, BRIDGE_PROTOCOL } = await import('../src/main/version.js');
+const { BROWSER_BRIDGE_AUTO_PORTS } = await import('../src/shared/browser-bridge.js');
 
 let domSource = '';
 let backgroundSource = '';
@@ -40,7 +41,9 @@ describe('extension release metadata', () => {
     expect(lock.packages?.['']?.version).toBe(APP_VERSION);
     expect(manifest.version).toBe(APP_VERSION);
     expect(BRIDGE_PROTOCOL).toBe(14);
-    expect(backgroundSource).toContain('const BRIDGE_PROTOCOL = 14;');
+    const protocolSource = await fs.readFile(path.join(process.cwd(), 'extension', 'protocol.js'), 'utf8');
+    expect(protocolSource).toContain(`export const BRIDGE_PROTOCOL = ${BRIDGE_PROTOCOL};`);
+    expect(backgroundSource).toContain(`import { BRIDGE_PROTOCOL, PORTS } from './protocol.js';`);
   });
 
   /**
@@ -662,6 +665,9 @@ function loadWorker(options: {
   if (options.debuggerApi) (chrome as Record<string, unknown>).debugger = options.debuggerApi;
   const activeTabsSource = options.debuggerApi ? readFileSync('extension/active-tabs.js', 'utf8').replace('export function', 'function') : '';
   vm.runInNewContext(activeTabsSource + backgroundSource.replace(/^import .*$/gm, ''), {
+    // The import line is stripped above; the two constants it loads are supplied here.
+    BRIDGE_PROTOCOL,
+    PORTS: BROWSER_BRIDGE_AUTO_PORTS,
     // The browser-control module is imported in the real worker; with a debugger it is asked for one.
     ...(options.debuggerApi ? { createBrowserControl: () => ({ pump: async () => undefined, event: async () => undefined }) } : {}),
     chrome,

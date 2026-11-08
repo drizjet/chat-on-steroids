@@ -24,9 +24,11 @@ describe('bridge port candidates', () => {
     expect(BROWSER_BRIDGE_AUTO_PORTS).toEqual([...BROWSER_BRIDGE_PORTS, ...BROWSER_BRIDGE_FALLBACK_PORTS]);
   });
   it('lets the extension find every port Auto may choose', () => {
-    const source = readFileSync(new URL('../extension/background.js', import.meta.url), 'utf8');
-    const literal = /^const PORTS = \[([0-9, ]+)\];$/m.exec(source)?.[1];
+    const source = readFileSync(new URL('../extension/protocol.js', import.meta.url), 'utf8');
+    const literal = /^export const PORTS = \[([0-9, ]+)\];$/m.exec(source)?.[1];
     expect(literal?.split(',').map(value => Number(value.trim()))).toEqual([...BROWSER_BRIDGE_AUTO_PORTS]);
+    const background = readFileSync(new URL('../extension/background.js', import.meta.url), 'utf8');
+    expect(background).toContain(`import { BRIDGE_PROTOCOL, PORTS } from './protocol.js';`);
     const manifest = JSON.parse(readFileSync(new URL('../extension/manifest.json', import.meta.url), 'utf8')) as { host_permissions: string[] };
     for (const port of BROWSER_BRIDGE_AUTO_PORTS) expect(manifest.host_permissions).toContain(`http://127.0.0.1:${port}/*`);
   });

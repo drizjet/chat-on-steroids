@@ -21,6 +21,7 @@
     "verify:tunnel-current": "node scripts/verify-current-tunnel.mjs",
     "hooks:install": "node scripts/install-git-hooks.mjs",
     "icon": "node scripts/make-icon.mjs",
+    "extension:protocol": "node scripts/generate-extension-protocol.mjs",
     "extension:firefox:stage": "node scripts/stage-firefox-extension.mjs",
     "tunnel": "node scripts/fetch-tunnel-client.mjs",
     "rg": "node scripts/fetch-ripgrep.mjs",

@@ -31,6 +31,7 @@ const node = process.execPath;
 run(node, ['-e', "require('electron')"]);
 run(node, ['scripts/generate-third-party-notices.mjs']);
 run(node, ['scripts/make-icon.mjs']);
+run(node, ['scripts/generate-extension-protocol.mjs']);
 // Before the bundle is built, so the stamp that ships is the stamp of what ships. The app and the
 // extension both read this one file to tell which extension build a browser is running.
 run(node, ['scripts/write-extension-stamp.mjs']);

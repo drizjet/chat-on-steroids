@@ -16,6 +16,7 @@ import { constants as fsConstants, promises as fs } from 'node:fs';
 import { app, dialog, screen, shell, webContents, type BrowserWindow } from 'electron';
 import { chatLines, crashLines, errorSummaryLines, installKind, installLines, systemLines, toolCallLines, type ChatFactsSession } from './diagnostics-facts.js';
 import type { CompanionDiagnostics, CompanionEnvironment, UpdateStatus } from '../shared/types.js';
+import { isTerminalState } from '../shared/input.js';
 import { getConfig } from './config.js';
 import { goalSwitchFor } from './goal.js';
 import { flushLogFile, logFilePath } from './logger.js';
@@ -147,7 +148,7 @@ export async function collectReportFacts(sources: { update: UpdateStatus; sessio
     errors: errorSummaryLines(),
     tools: toolCallLines(sources.now),
     // Finished inputs say nothing about a stuck chat; only waiting and moving ones are counted.
-    chats: chatLines(sources.sessions, sources.inputs.filter(input => !['sent', 'failed', 'cancelled'].includes(input.state)), sources.now, session => {
+    chats: chatLines(sources.sessions, sources.inputs.filter(input => !isTerminalState(input.state)), sources.now, session => {
       const conversationId = session.conversationId;
       if (!conversationId) return null;
       const mode = goalSwitchFor(conversationId);

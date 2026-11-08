@@ -1,4 +1,5 @@
 import { MAX_CHAT_STYLE_CHARS } from '../shared/chat-style.js';
+import { isTerminalState } from '../shared/input.js';
 import { registerWorkspaceTerminalIpc } from './workspace-terminal-ipc.js';
 import { forgetSurfaceTokens } from './mcp/persistent-paths.js';
 import { firefoxAddonUrl } from '../shared/firefox-addon.js';
@@ -1655,11 +1656,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
     // A file in a project on a server (#1469) is copied over SFTP first.
     const snapshot = await serverFileSnapshot(projectId, path);
     if (snapshot) {
-      const retained = new Set((await listInputs()).filter(row => !['sent', 'failed', 'cancelled'].includes(row.state)).flatMap(row => row.attachments?.map(file => file.id) ?? []));
+      const retained = new Set((await listInputs()).filter(row => !isTerminalState(row.state)).flatMap(row => row.attachments?.map(file => file.id) ?? []));
       try { return await stageInputAttachment(snapshot.file, retained); } finally { await snapshot.cleanup(); }
     }
     const target = await projectFileTarget(projectId, path, { allowRoot: false, fileOnly: true });
-    const retained = new Set((await listInputs()).filter(row => !['sent', 'failed', 'cancelled'].includes(row.state)).flatMap(row => row.attachments?.map(file => file.id) ?? []));
+    const retained = new Set((await listInputs()).filter(row => !isTerminalState(row.state)).flatMap(row => row.attachments?.map(file => file.id) ?? []));
     const checked = await projectFileTarget(projectId, path, { allowRoot: false, fileOnly: true });
     if (checked.real !== target.real) throw new Error('The project file changed location');
     return stageInputAttachment(checked.real, retained);
@@ -1973,7 +1974,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
   });
 
   const stageFiles = async (sources: AttachmentSource[]) => {
-    const retained = new Set((await listInputs()).filter(row => !['sent', 'failed', 'cancelled'].includes(row.state)).flatMap(row => row.attachments?.map(file => file.id) ?? []));
+    const retained = new Set((await listInputs()).filter(row => !isTerminalState(row.state)).flatMap(row => row.attachments?.map(file => file.id) ?? []));
     return stageInputAttachments(sources, retained);
   };
   handle('sessions:files', async () => {

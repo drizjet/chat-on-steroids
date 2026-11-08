@@ -4,7 +4,7 @@ import { REASONING_EFFORTS, workSequence } from '../../shared/session.js';
  * Tool delivery repeats under a stable message id until a later request proves receipt.
  */
 import { z } from 'zod';
-import { authoredTextOf, browserInputModel, manualInput, queuedFollowup, MAX_INPUT_IMAGES, type InputImage } from '../../shared/input.js';
+import { authoredTextOf, browserInputModel, manualInput, queuedFollowup, isPendingState, isSettledIntoTranscript, isTerminalState, MAX_INPUT_IMAGES, type InputImage } from '../../shared/input.js';
 import type { SessionSummary } from '../../shared/session.js';
 import { getConfig } from '../config.js';
 import { randomUUID } from 'node:crypto';
@@ -382,10 +382,14 @@ let chain: Promise<unknown> = Promise.resolve();
 // A timestamp written before the claim commit cannot prove that its response was
 // available. Restart discards this evidence and repeats the stable message id.
 const offered = new Map<string, number>();
-const terminal = (row: InputEntry): boolean => ['sent', 'cancelled', 'failed'].includes(row.state);
+const terminal = (row: InputEntry): boolean => isTerminalState(row.state);
 /** Native Send was never authorized: the row was not claimed, or its claim still awaited authorization. */
 const neverAuthorized = (row: InputEntry): boolean => row.sendAuthorizedAt === undefined &&
   (row.offeredAt === undefined || row.requiresAuthorization === true);
+
+/** A delivery receipt the exact history owner can rely on; a late ACK may follow a cancel. */
+export const hasDeliveryReceipt = (row: Pick<InputEntry, 'state' | 'messageId' | 'deliveredAt'>): boolean =>
+  isSettledIntoTranscript(row.state) && !!row.messageId && Number.isFinite(row.deliveredAt);
 
 export type DeliveryProof = 'sent' | 'not_sent' | 'unconfirmed' | 'pending';
 /**
@@ -547,8 +551,7 @@ async function retireRemovedSessionReceipts(current: InputEntry[], pendingOnly =
   const removed = new Set<string>();
   for (const row of current) {
     const sessionId = row.sessionId ?? row.deliveredSessionId;
-    if (!sessionId || row.purpose === 'decision' || !['sent', 'cancelled'].includes(row.state) ||
-        !row.messageId || !Number.isFinite(row.deliveredAt) ||
+    if (!sessionId || row.purpose === 'decision' || !hasDeliveryReceipt(row) ||
         (pendingOnly && !needsHistory(row) && !pendingStages(row))) continue;
     if (!missing.has(sessionId)) missing.set(sessionId, await sessionDirectoryMissing(sessionId));
     if (missing.get(sessionId)) removed.add(row.id);
@@ -766,7 +769,7 @@ function append(current: InputEntry[], entry: InputEntry, stackDirect = false): 
   // Admission is per durable session. Native composer custody stays with each claim.
   if (!stackDirect && entry.purpose !== 'decision' && !queuedFollowup(entry) && current.some(row => row.sessionId === entry.sessionId && row.purpose !== 'decision' &&
       !(!entry.finishOwner && row.finishOwner && row.state === 'tool') &&
-      (!queuedFollowup(row) || row.state === 'browser') && ['queued', 'browser', 'tool'].includes(row.state))) {
+      (!queuedFollowup(row) || row.state === 'browser') && isPendingState(row.state))) {
     throw new Error('One message is already awaiting delivery. Cancel it before sending another.');
   }
   const active = current.filter((row) => !terminal(row) || needsHistory(row) || pendingStages(row));
@@ -1514,7 +1517,7 @@ export function pendingQueuedPickups(): Promise<Array<{ inputId: string; convers
   return serial(async () => {
     const rows = await load();
     const result: Array<{ inputId: string; conversationId: string; sessionId: string; sourceTurnId: string; acceptedAt: number; listenUntil: number; pro: boolean; pickupAttempts: number; pickupNextAt?: number; pickupStoppedAt?: number }> = [];
-    const pending = ordered(rows).filter(row => row.sessionId && row.purpose !== 'decision' && ['queued', 'browser', 'tool'].includes(row.state));
+    const pending = ordered(rows).filter(row => row.sessionId && row.purpose !== 'decision' && isPendingState(row.state));
     for (const sessionId of new Set(pending.map(row => row.sessionId))) {
       const candidates = pending.filter(row => row.sessionId === sessionId);
       const row = candidates.find(row => manualInput(row) && row.silenceBoundary) ?? candidates[0]!;
@@ -1557,7 +1560,7 @@ export function inputBeforeGoal(sessionId: string, sourceTurnId?: string): Promi
   return serial(async () => {
     const rows = await load();
     if (rows.some(row => row.sessionId === sessionId && row.purpose !== 'decision' &&
-      ['queued', 'browser', 'tool'].includes(row.state))) return 'queued';
+      isPendingState(row.state))) return 'queued';
     return sourceTurnId && rows.some(row => row.sessionId === sessionId && consumedTurn(row, sourceTurnId)) ? 'consumed' : null;
   });
 }
@@ -1566,7 +1569,7 @@ export function inputBeforeGoal(sessionId: string, sourceTurnId?: string): Promi
 export function finishNeedsBrowserInput(sessionId: string): Promise<boolean> {
   return serial(async () => {
     const head = ordered(await load()).find(row => row.sessionId === sessionId && row.purpose !== 'decision' &&
-      ['queued', 'browser', 'tool'].includes(row.state));
+      isPendingState(row.state));
     if (!head || head.state !== 'queued' || head.dueAt > Date.now() ||
       !(head.mode === 'after-turn' || (head.attachments?.length && head.attachmentDelivery !== 'tool'))) return false;
     const session = await getSession(sessionId);
@@ -1806,7 +1809,7 @@ async function completedStageBoundary(entry: InputEntry, current: InputEntry[]):
       row.silenceBoundary?.turnId === turnId)) return null;
   if (current.some(row => row.sessionId === entry.sessionId && (consumedTurn(row, turnId) || row.state === 'tool' || row.state === 'browser'))) return null;
   if (current.some(row => row.sessionId === entry.sessionId && !queuedFollowup(row) && row.purpose !== 'decision' &&
-      row.dueAt <= Date.now() && ['queued', 'browser', 'tool'].includes(row.state))) return null;
+      row.dueAt <= Date.now() && isPendingState(row.state))) return null;
   return turnId;
 }
 export function pendingBrowserInputs(): Promise<Array<{ id: string; conversationId: string | null; recovery?: { questionId: string; stop: boolean }; silenceTurnId?: string; directTurn?: InputEntry['directTurn']; supersededConversationId?: string; lifetime?: 'temporary-planner'; project?: string; branch?: { conversationId: string; messageId: string }; edit?: { messageId: string } }>> {

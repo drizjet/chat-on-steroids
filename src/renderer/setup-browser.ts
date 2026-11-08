@@ -1,4 +1,5 @@
-import { isNewer, type AppState, type ChatBrowser } from '../shared/types.js';
+import type { AppState, ChatBrowser } from '../shared/types.js';
+import { extensionVersionRelation } from './update-versions.js';
 import { $, run } from './dom.js';
 import { onLanguageChange, t, ui } from './i18n.js';
 import { extensionPicture, quoted, renderExtensionPicture } from './extension-pictures.js';
@@ -120,7 +121,7 @@ export function initBrowserSetup(actions: {
     const live = observation?.present === true;
     const shownVersion = live ? observation!.version : proof?.version ?? null;
     const knownVersion = !!shownVersion && /^\d+\.\d+\.\d+$/.test(shownVersion);
-    const outdated = knownVersion && isNewer(state.update.current, shownVersion!);
+    const outdated = knownVersion && extensionVersionRelation(state.update.current, shownVersion) === 'extension-behind';
     // The browser keeps the extension off chatgpt.com (site access "On click", a revoked Firefox
     // permission): it can pair, but nothing could ever run on a ChatGPT page.
     const blocked = live && observation?.chatgptAccess === false;
