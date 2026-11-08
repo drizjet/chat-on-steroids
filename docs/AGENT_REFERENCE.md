@@ -2527,7 +2527,12 @@ takes no new work (#1516): `/status` offers it no inputs, revivals, Project crea
 refreshes or model-list requests; `/input/claim` and `/repairs/claim` refuse it and
 `/commands/redeem` answers 409 `not_chosen_browser`. A page there gets no worker or replacement
 tab to open through `/activity` or its `/compact` reply either (`opensNewWork`, #1852), which also
-holds for an out-of-date companion. It still records and stops what the person
+holds for an out-of-date companion. Goal/Loop's `/activity` projection withholds automatic
+drafts and pending replies from those companions while retaining the configured mode and
+objective; its effective `own` fence prevents an objective from re-enabling the page driver.
+`/goal/draft` refuses them before admission and rechecks browser eligibility after async
+authority reads, immediately before provider work. Existing send acknowledgements remain
+accepted. It still records and stops what the person
 opens there, and works on as before once the CoS browser is gone. The chosen CoS browser takes a
 new chat's opening custody over from another browser, and a chat's repair too: `takePendingRepairs`
 skips a chat held by another browser for every browser except the chosen built-in one, since the holder

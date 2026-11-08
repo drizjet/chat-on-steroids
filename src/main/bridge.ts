@@ -3515,8 +3515,11 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       const currentPending = goalPendingReplyFor(id);
       if (pending && (currentPending?.replyId !== pending.replyId || currentPending.turnId !== pending.turnId ||
           currentPending.acceptedAt !== pending.acceptedAt)) pending = null;
+      // Browser choice/build can change during the authority reads above. Keep the saved
+      // mode visible, but hand automatic work only to a companion that may act now.
+      const canDrive = opensNewWork(req, '/activity', id);
       return ({
-      enabled: !superseded && !finishOnly && goalEnabledFor(id),
+      enabled: canDrive && !superseded && !finishOnly && goalEnabledFor(id),
       configuredEnabled: !superseded && goalEnabledFor(id),
       afterTurn: loopAfterTurnFor(id),
       proLoopDelivery: goalEnabledFor(id) && getConfig().ui.finishTool === true && astraSession?.selectedModel?.conversationId === id &&
@@ -3524,12 +3527,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       // Has this chat answered for itself? The page reads the switch and the saved goal as
       // one state — see goalArmedFor() — and cannot tell an Off somebody chose here from an
       // Off merely inherited from the app-wide setting without being told which it is.
-      own: superseded || finishOnly || goalFencedChat(id) || goalSwitchFor(id).own,
+      own: !canDrive || superseded || finishOnly || goalFencedChat(id) || goalSwitchFor(id).own,
       mode: goalModeFor(id),
       ...goalProgressFor(goalModeFor(id), draft),
       hasKey,
       queuePending,
-      wait,
+      wait: canDrive ? wait : null,
       // This chat's own goal, and never a worker's: the loop is off there whatever is
       // stored, and reporting one would let the page offer to drive a chat the prime owns.
       objective: superseded || goalWorkerChat(id) ? '' : goalObjectiveFor(id),
@@ -3542,8 +3545,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       // script resumes this instead of manufacturing a turn from the rendered transcript.
       // A blocked chat's owed decision is withheld too, so the page cannot pick it up and
       // draft into a chat whose tools are refused.
-      pending: superseded || goalFencedChat(id) || silenceSuppressed || queuePending ? null : pending,
-      draft
+      pending: !canDrive || superseded || goalFencedChat(id) || silenceSuppressed || queuePending ? null : pending,
+      draft: canDrive ? draft : null
     });
     };
     // Every open ChatGPT tab polls this for its own conversation every few seconds, so
@@ -4343,6 +4346,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const id = conversationId(body['conversationId']);
     const turnId = typeof body['turnId'] === 'string' ? body['turnId'].slice(0, 200) : '';
     const terminalRequired = body['terminalRequired'] === true;
+    const workRefusal = () => staleCompanion(req) ? 'stale_extension_build' : notChosenBrowser(req) ? 'not_chosen_browser' : null;
+    const refused = workRefusal();
+    if (refused) return goalJson(res, 409, { error: refused, retryable: false }, origin);
     // The page asking is the pickup the owed-reply watchdog is waiting for, whatever the
     // provider then says. On 2026-09-02 OpenRouter answered ten drafts in a row with 429 and the
     // page retried every fifteen seconds, alive the whole time; the watchdog only saw a reply
@@ -4393,7 +4399,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       const final = await readCompletedFinal(sessionId, id, turnId);
       const current = () => goalPendingReplyFor(id)?.replyId === pending?.replyId &&
         goalPendingReplyFor(id)?.acceptedAt === pending?.acceptedAt && goalActiveFor(id) &&
-        !isChatBlocked(id) && !stopRequestedFor(id) && runningToolCalls(id) === 0 && !continuationForSession(sessionId);
+        !workRefusal() && !isChatBlocked(id) && !stopRequestedFor(id) && runningToolCalls(id) === 0 && !continuationForSession(sessionId);
       if (!pending || pending.turnId !== turnId || !final || !await loopReplyHasAuthority(sessionId, id, turnId) || !current())
         return goalJson(res, 409, { error: 'goal_final_not_confirmed', retryable: false }, origin);
       if (!pending.listenUntil) {
@@ -4414,6 +4420,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         origin
       );
     }
+    const beforeReserve = workRefusal();
+    if (beforeReserve) return goalJson(res, 409, { error: beforeReserve, retryable: false }, origin);
     let draft;
     try {
       // Reserve the browser owner synchronously, but do not let provider work begin until the
@@ -4451,7 +4459,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         turnId,
         eventSeq: 0,
         blocked: false,
-        current: () => !supersededSourceConversations().includes(id) && !goalFencedChat(id)
+        current: () => !supersededSourceConversations().includes(id) && !goalFencedChat(id) && !workRefusal()
       });
     } catch (err) {
       discardPreparedGoalDraft(id, draft.token);
@@ -4488,6 +4496,11 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (supersededSourceConversations().includes(id)) {
       discardPreparedGoalDraft(id, draft.token);
       return goalJson(res, 409, { error: 'conversation_superseded' }, origin);
+    }
+    const beforeStart = workRefusal();
+    if (beforeStart) {
+      discardPreparedGoalDraft(id, draft.token);
+      return goalJson(res, 409, { error: beforeStart, retryable: false }, origin);
     }
     beginGoalDraft(id, draft.token);
     return goalJson(res, 200, { goal: draft, sessionId }, origin);

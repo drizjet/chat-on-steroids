@@ -15476,6 +15476,113 @@ describe('the goal loop over the bridge', () => {
     resetGoalStateForTests();
   });
 
+  it.each(['goal', 'loop'] as const)('withholds %s work from an unchosen browser without changing its saved setting', async mode => {
+    await pair();
+    const goal = await import('../src/main/goal.js');
+    const chat = randomUUID();
+    const chrome = 'c'.repeat(32), builtIn = 'd'.repeat(32);
+    await saveConfig({ ...getConfig(), goal: { ...getConfig().goal, mode },
+      ui: { ...getConfig().ui, chatBrowser: 'cos' } });
+    await createSession({ conversationId: chat });
+    await goal.setGoalObjective(chat, 'Finish this chat’s own task');
+    const activity = (browser: string, host: string) => request('GET', `/activity?conversationId=${chat}`, { browser, host });
+    // Choosing the built-in browser must not strand work when it is absent.
+    expect((await activity(chrome, 'browser')).body.goal.enabled).toBe(true);
+    await request('POST', '/status', { browser: builtIn, host: 'cos', body: { openConversations: [] } });
+    expect((await activity(chrome, 'browser')).body.goal).toMatchObject({
+      enabled: false, configuredEnabled: true, own: true, pending: null, draft: null, wait: null,
+      objective: 'Finish this chat’s own task'
+    });
+    const refused = await request('POST', '/goal/draft', { browser: chrome, host: 'browser',
+      body: { conversationId: chat, turnId: 'unchosen-turn', clientId: 'unchosen-client' } });
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ error: 'not_chosen_browser', retryable: false });
+    expect(goal.goalViewFor(chat)).toBeNull();
+    expect(goal.goalPendingReplyFor(chat)).toBeNull();
+    expect((await activity(builtIn, 'cos')).body.goal.enabled).toBe(true);
+    await saveConfig({ ...getConfig(), ui: { ...getConfig().ui, chatBrowser: 'chrome' } });
+    expect((await activity(chrome, 'browser')).body.goal.enabled).toBe(true);
+    expect(getConfig().goal.enabled).toBe(true);
+  });
+
+  it('withholds Goal work from a stale companion only while a current one is present', async () => {
+    await pair();
+    const shipped = 'a1'.repeat(6), old = 'b2'.repeat(6);
+    setShippedExtensionBuildForTest(shipped);
+    const chat = randomUUID();
+    await createSession({ conversationId: chat });
+    const activity = (extensionBuild: string) => request('GET', `/activity?conversationId=${chat}`, { extensionBuild });
+    try {
+      expect((await activity(old)).body.goal.enabled).toBe(true);
+      expect((await activity(shipped)).body.goal.enabled).toBe(true);
+      expect((await activity(old)).body.goal).toMatchObject({ enabled: false, own: true, draft: null, pending: null });
+      const refused = await request('POST', '/goal/draft', { extensionBuild: old,
+        body: { conversationId: chat, turnId: 'stale-turn' } });
+      expect(refused.status).toBe(409);
+      expect(refused.body).toMatchObject({ error: 'stale_extension_build', retryable: false });
+    } finally { setShippedExtensionBuildForTest(); }
+  });
+
+  it('withholds a ready Goal draft when browser choice changes during an activity read and still accepts its send receipt', async () => {
+    await pair();
+    const goal = await import('../src/main/goal.js');
+    const chat = randomUUID();
+    const chrome = 'c'.repeat(32), builtIn = 'd'.repeat(32);
+    await request('POST', '/events', { body: { conversationId: chat,
+      events: [{ kind: 'user_message', time: Date.now(), text: 'Finish this task', messageId: 'browser-feed-user' }] } });
+    await recordFinalForTest(chat, 'browser-feed-source');
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => Response.json({ choices: [{ message: { content: '{"action":"continue","reply":"Run the checks"}' } }] })) as never;
+    const gate = faultGate();
+    let restoreAuthority = () => {};
+    try {
+      const drafted = await request('POST', '/goal/draft', { browser: chrome, host: 'browser',
+        body: { conversationId: chat, turnId: 'browser-feed-source', clientId: 'browser-feed-client' } });
+      expect(drafted.status).toBe(200);
+      await vi.waitFor(() => expect(goal.goalViewFor(chat)?.stage).toBe('ready'));
+      const authority = vi.spyOn(goal, 'loopReplyHasAuthority').mockImplementationOnce(async () => { await gate.hold(); return true; });
+      restoreAuthority = () => authority.mockRestore();
+      const reading = request('GET', `/activity?conversationId=${chat}&goalClient=browser-feed-client`, { browser: chrome, host: 'browser' });
+      await gate.entered;
+      await saveConfig({ ...getConfig(), ui: { ...getConfig().ui, chatBrowser: 'cos' } });
+      await request('POST', '/status', { browser: builtIn, host: 'cos', body: { openConversations: [] } });
+      gate.release();
+      expect((await reading).body.goal).toMatchObject({ enabled: false, own: true, draft: null, pending: null });
+      // Hiding work is not cancellation or permission to lose an already-sent receipt.
+      expect(goal.goalViewFor(chat)?.stage).toBe('ready');
+      expect((await request('POST', '/goal/ack', { browser: chrome, host: 'browser',
+        body: { conversationId: chat, token: drafted.body.goal.token, clientId: 'browser-feed-client' } })).body.acknowledged).toBe(true);
+    } finally { gate.release(); restoreAuthority(); globalThis.fetch = realFetch; }
+  });
+
+  it('rechecks the chosen browser after Goal draft authority reads before starting provider work', async () => {
+    await pair();
+    const goal = await import('../src/main/goal.js');
+    const chat = randomUUID();
+    const chrome = 'c'.repeat(32), builtIn = 'd'.repeat(32);
+    await request('POST', '/events', { body: { conversationId: chat,
+      events: [{ kind: 'user_message', time: Date.now(), text: 'Finish this task', messageId: 'browser-race-user' }] } });
+    await recordFinalForTest(chat, 'browser-race-source');
+    const gate = faultGate();
+    const authority = vi.spyOn(goal, 'loopReplyHasAuthority').mockImplementationOnce(async () => { await gate.hold(); return true; });
+    const realFetch = globalThis.fetch;
+    const provider = vi.fn(async () => Response.json({ choices: [{ message: { content: '{"action":"continue","reply":"Run the checks"}' } }] }));
+    globalThis.fetch = provider as never;
+    try {
+      const drafting = request('POST', '/goal/draft', { browser: chrome, host: 'browser',
+        body: { conversationId: chat, turnId: 'browser-race-source' } });
+      await gate.entered;
+      await saveConfig({ ...getConfig(), ui: { ...getConfig().ui, chatBrowser: 'cos' } });
+      await request('POST', '/status', { browser: builtIn, host: 'cos', body: { openConversations: [] } });
+      gate.release();
+      const refused = await drafting;
+      expect(refused.status).toBe(409);
+      expect(refused.body.error).toBe('not_chosen_browser');
+      expect(goal.goalViewFor(chat)).toBeNull();
+      expect(provider).not.toHaveBeenCalled();
+    } finally { gate.release(); authority.mockRestore(); globalThis.fetch = realFetch; }
+  });
+
   /**
    * A chat's own workers report back into that same chat, so its next automatic Goal step must
    * not be decided from a context that is about to change. One rule decides that, in the module
