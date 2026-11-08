@@ -1,16 +1,21 @@
 // Production renderer and real Chromium layout/input; synthetic conversations only (#1133).
 // Pinned chats: Pin moves a chat to the top of its list with a visible mark, pins keep their own order,
 // survive a reload (local preference), and Unpin returns the chat to its place.
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = process.env.COS_UI_ROOT || path.resolve(__dirname, '..');
 const output = path.resolve(process.env.COS_UI_OUTPUT || path.join(root, '.tmp', 'chat-pin'));
 const { fixtureConfigSource, BENIGN_RENDERER_ERRORS } = require(path.join(root, 'scripts/fixtures/app-defaults.cjs'));
 // Pins are a saved preference: every run starts from an empty profile.
 fs.rmSync(path.join(output, 'profile'), { recursive: true, force: true });
-app.setPath('userData', path.join(output, 'profile')); app.disableHardwareAcceleration();
-const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-let server, win;
+const harness = createHarness({ name: 'chat-pin', width: 1280, height: 800, userData: path.join(output, 'profile'), output, ignoreErrors: BENIGN_RENDERER_ERRORS });
+harness.app.disableHardwareAcceleration();
 const fixture = `(() => {
  const old=window.api,f=composerFixture,ok=data=>Promise.resolve({ok:true,data:structuredClone(data)});
  f.summary.title='Write a haiku about snow. Do not use any tools.';
@@ -31,7 +36,8 @@ const fixture = `(() => {
  };
  window.api=new Proxy(methods,{get:(target,key)=>key in target?target[key]:old[key]});
 })();`;
-app.whenReady().then(async () => {
+let server;
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   server = await createServer({ configFile:false, root:path.join(root,'src/renderer'), cacheDir:path.join(output,'vite'), logLevel:'error',
     resolve:{alias:{'@phosphor-icons/web':path.join(root,'node_modules/@phosphor-icons/web/src')}},
@@ -39,12 +45,11 @@ app.whenReady().then(async () => {
     plugins:[{name:'chat-pin-fixture',transformIndexHtml:html=>html.replace('</head>','<script src="/timeline-fixture.js"></script></head>'),
       configureServer(vite){vite.middlewares.use((req,res,next)=>{if(req.url!=='/timeline-fixture.js')return next();res.setHeader('Content-Type','text/javascript');res.end(fixtureConfigSource()+fs.readFileSync(path.join(root,'scripts/fixtures/composer-ui.js'),'utf8')+fixture);});}}] });
   await server.listen();
-  win = new BrowserWindow({show:false,width:1280,height:800,webPreferences:{sandbox:true,offscreen:true,backgroundThrottling:false}});
-  const errors=[];
-  win.webContents.on('console-message',e=>{if(e.level==='error'&&!BENIGN_RENDERER_ERRORS.includes(e.message))errors.push(e.message);});
-  const js=code=>win.webContents.executeJavaScript(code);
-  const until=async expression=>{for(const deadline=Date.now()+15000;Date.now()<deadline;){if(await js(expression))return;await pause(40);}throw new Error('Timed out: '+expression);};
-  const settle=async()=>{await js(`document.getAnimations().forEach(a=>{if(a.effect.getTiming().iterations!==Infinity)a.finish()})`);await pause(180);};
+  await harness.window({ webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
+  const win = harness.win;
+  const js=code=>harness.js(code);
+  const until=async expression=>{await harness.until(expression, 15000);};
+  const settle=async()=>{await js(`document.getAnimations().forEach(a=>{if(a.effect.getTiming().iterations!==Infinity)a.finish()})`);await harness.pause(180);};
   const capture=async name=>{await settle();fs.mkdirSync(output,{recursive:true});fs.writeFileSync(path.join(output,name),(await win.webContents.capturePage()).toPNG());};
   const order=()=>js(`[...document.querySelectorAll('#sessionList .sess[data-id]')].filter(r=>!r.closest('.worker-group')).map(r=>r.dataset.id)`);
   const row=id=>`document.querySelector('#sessionList .sess[data-id="${id}"]')`;
@@ -53,9 +58,9 @@ app.whenReady().then(async () => {
   const closeMenu=()=>js(`document.querySelector('.row-menu')?.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
   const pinLabel=async id=>{await openMenu(id);const label=await js(`document.querySelector('.row-menu [data-row-action="pin"]').textContent`);await closeMenu();return label;};
   const pin=async id=>{await openMenu(id);await js(`document.querySelector('.row-menu [data-row-action="pin"]').click()`);await settle();};
-  await win.loadURL(server.resolvedUrls.local[0]);
+  await harness.loadUrl(server.resolvedUrls.local[0]);
   await until(`!!${row('other-chat-3')}?.querySelector('.row-menu-button')`);
-  win.show(); win.focus(); win.webContents.focus(); await pause(100);
+  win.show(); win.focus(); win.webContents.focus(); await harness.pause(100);
   const before=await order();
   assert.equal(before.length,4,'Four chats: '+JSON.stringify(before));
   assert.equal(await pinLabel('other-chat-3'),'Pin chat');
@@ -111,7 +116,14 @@ app.whenReady().then(async () => {
   await pin('other-chat-3'); await pin('other-chat-1');
   assert.deepEqual(await order(),before,'Unpinned chats go back to their places');
   assert.equal(await js(`document.querySelectorAll('#sessionList .is-pinned').length`),0);
-  assert.deepEqual(errors,[]);
+  assert.deepEqual(harness.pageErrors,[]);
   console.log('PASS: pinned chats lead their list with a visible mark, keep order across repaints and reload, and unpin back into place');
-  win.destroy();await server.close();app.exit(0);
-}).catch(async error=>{fs.mkdirSync(output,{recursive:true});if(win&&!win.isDestroyed())fs.writeFileSync(path.join(output,'failure.png'),(await win.webContents.capturePage()).toPNG());console.error(error);await server?.close();app.exit(1);});
+  await server.close();
+  harness.finish();
+}).catch(async error=>{
+  fs.mkdirSync(output,{recursive:true});
+  if(harness.win&&!harness.win.isDestroyed()){try{fs.writeFileSync(path.join(output,'failure.png'),(await harness.win.webContents.capturePage()).toPNG());}catch{}}
+  console.error(error);
+  await server?.close();
+  harness.onError(error);
+});

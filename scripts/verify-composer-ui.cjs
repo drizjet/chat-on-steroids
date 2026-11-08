@@ -1,15 +1,21 @@
 // Production renderer and styles, with in-memory IPC only. No account or user data.
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = path.resolve(__dirname, '..');
 const output = path.join(root, '.tmp/composer-ui');
-app.setPath('userData', path.join(output, 'profile'));
-app.disableHardwareAcceleration();
+const harness = createHarness({ name: 'composer-ui', width: 1440, height: 960, userData: path.join(output, 'profile'), output });
+harness.app.disableHardwareAcceleration();
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 let server;
-app.whenReady().then(async () => {
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   server = await createServer({ configFile: false, root: path.join(root, 'src/renderer'),
     cacheDir: path.join(output, 'vite'), logLevel: 'error',
@@ -24,11 +30,11 @@ app.whenReady().then(async () => {
     }); } }]
   });
   await server.listen();
-  const win = new BrowserWindow({ show: false, width: 1440, height: 960,
-    webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
+  await harness.window({ webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
+  const win = harness.win;
   const errors = [];
   win.webContents.on('console-message', event => { if (event.level === 'error') errors.push(event.message); });
-  await win.loadURL('http://127.0.0.1:4420'); win.webContents.setZoomFactor(1); await pause(2200);
+  await harness.loadUrl('http://127.0.0.1:4420'); win.webContents.setZoomFactor(1); await pause(2200);
   await win.webContents.executeJavaScript(`document.querySelector('#sessionList [data-id="composer-preview"]').click()`);
   await pause(500);
   const js = source => win.webContents.executeJavaScript(source);
@@ -250,7 +256,7 @@ app.whenReady().then(async () => {
   // The offer belongs to its chat: New chat must not keep the dot or the screen-reader notice (CodeRabbit on #2019).
   await js(`window.offerAt=Date.now()-1;composerFixture.controls.job={busy:true,phase:'requesting',stage:'handoff-pending',handoffId:null,startedAt:Date.now()-16*60000};composerFixture.notify()`);
   await until(`document.getElementById('contextMeter').hasAttribute('data-attention')`, 8000);
-  // \`until\` gives up quietly: say it here, so the step below cannot pass without an offer to remove.
+  // `until` gives up quietly: say it here, so the step below cannot pass without an offer to remove.
   await check('The offer shows before New chat', `document.getElementById('contextMeter').hasAttribute('data-attention')&&/15 minutes/.test(document.getElementById('contextMeterNotice').textContent)`);
   await click('#newChat'); await pause(300);
   await check('New chat drops the previous chat\'s summary offer', `!document.getElementById('contextMeter').hasAttribute('data-attention')&&document.getElementById('contextMeterNotice').textContent===''&&document.getElementById('resumeLastSummary').hidden`);
@@ -297,5 +303,6 @@ app.whenReady().then(async () => {
   const resizeNotifications = errors.filter(message => message === 'ResizeObserver loop completed with undelivered notifications.');
   assert.deepEqual(errors.filter(message => !resizeNotifications.includes(message)), [], 'renderer console errors');
   console.log(JSON.stringify({passed:checks.length,checks,resizeNotifications:resizeNotifications.length,captures:output},null,2));
-  win.destroy(); await server.close(); app.quit();
-}).catch(async error => { console.error(error); await server?.close(); app.exit(1); });
+  await server.close();
+  harness.finish();
+}).catch(async error => { console.error(error); await server?.close(); harness.onError(error); });

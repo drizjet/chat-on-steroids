@@ -1,14 +1,20 @@
 // Setup's access step in the production renderer: isolated Electron, no tunnel, credentials or user data.
 // Checks that the step and Workspace share one set of permission switches, and captures its states.
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = path.resolve(__dirname, '..');
 const { fixtureConfigSource } = require('./fixtures/app-defaults.cjs');
 const output = path.join(root, 'outputs/setup-access');
-app.setPath('userData', path.join(output, 'runtime'));
-app.whenReady().then(async () => {
+const harness = createHarness({ name: 'setup-access', width: 1100, height: 900, userData: path.join(output, 'runtime'), output });
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   // Read-only with the historical narrow permissions: what a pre-2.0 config or a recovered settings file loads as.
   const fixture = `
@@ -53,19 +59,19 @@ app.whenReady().then(async () => {
         res.setHeader('Content-Type','text/html');res.end(await vite.transformIndexHtml('/fixture.html',html));
       });
     }}]});
-  let win;
   try {
     await server.listen();
-    win=new BrowserWindow({show:false,width:1100,height:900,webPreferences:{sandbox:true,backgroundThrottling:false}});
-    await win.loadURL(server.resolvedUrls.local[0]+'fixture.html');
-    const js=code=>win.webContents.executeJavaScript(code);
+    await harness.window({ webPreferences: { sandbox: true, backgroundThrottling: false, offscreen: false } });
+    const win = harness.win;
+    const js=code=>harness.js(code);
     const frame=()=>js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
-    for(let i=0;i<200 && !(await js('!!window.fixtureReady'));i++) await new Promise(resolve=>setTimeout(resolve,25));
+    await harness.loadUrl(server.resolvedUrls.local[0]+'fixture.html');
+    await harness.until('!!window.fixtureReady', 5000);
     assert.equal(await js('!!window.fixtureReady'),true);
     fs.mkdirSync(output,{recursive:true});
     const capture=async name=>{
       // A hidden window can hold an entrance animation at its first frame, so they are finished here.
-      await new Promise(resolve=>setTimeout(resolve,300)); await js('document.getAnimations().forEach(animation=>{if(animation.effect?.getTiming().iterations!==Infinity)animation.finish();})'); await frame();
+      await harness.pause(300); await js('document.getAnimations().forEach(animation=>{if(animation.effect?.getTiming().iterations!==Infinity)animation.finish();})'); await frame();
       fs.writeFileSync(path.join(output,name+'.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
     };
     const openAccess=`document.querySelector('[data-tab="setup"]').click();document.querySelector('[data-rail-step="access"]').click();document.querySelector('[data-step="access"]').scrollIntoView({block:'start'});`;
@@ -95,7 +101,7 @@ app.whenReady().then(async () => {
     await capture('fine-control-open-dark');
 
     await js(`document.querySelector('[data-access="full"]').click()`);
-    for(let i=0;i<100 && !(await js('window.saves.length'));i++) await new Promise(resolve=>setTimeout(resolve,25));
+    await harness.until('window.saves.length > 0', 2500);
     const saved=await js('window.saves.at(-1)');
     assert.equal(saved.readOnly,false);
     assert.ok(Object.values(saved.capabilities).every(Boolean),'Full access turns every permission on');
@@ -133,7 +139,7 @@ app.whenReady().then(async () => {
     }
     console.log('Setup access passed: read-only reason, one shared set of switches, Full access and custom saves, Workspace round trip.');
   } finally {
-    win?.destroy();await server.close();
+    await server.close();
   }
-  app.exit(0);
-}).catch(error=>{console.error(error);app.exit(1);});
+  harness.finish();
+}).catch(error=>{console.error(error);harness.onError(error);});

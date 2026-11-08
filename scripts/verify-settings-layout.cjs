@@ -1,16 +1,22 @@
 // Run after npm run build. Isolated production markup/styles, real Usage renderer;
 // permission and connector rows below are explicit layout fixtures, not live settings.
 const { withoutScripts } = require('./ui-check-page.cjs');
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const { inkInsets: sharedInkInsets } = require('./fixtures/ink.cjs');
 const root = path.resolve(__dirname, '..');
 const output = path.join(root, 'outputs/settings-layout');
-app.setPath('userData', path.join(output, 'runtime'));
-app.whenReady().then(async () => {
+const harness = createHarness({ name: 'settings-layout', width: 1440, height: 950, userData: path.join(output, 'runtime'), output });
+harness.ready().then(async () => {
   fs.mkdirSync(output, { recursive: true });
   const { build } = await import('vite');
   const bundle = await build({ configFile: false, logLevel: 'silent', build: { write: false,
@@ -19,14 +25,14 @@ app.whenReady().then(async () => {
   const html = withoutScripts(fs.readFileSync(path.join(root, 'out/renderer/index.html'), 'utf8'))
     .replace('<head>', `<head><base href="${pathToFileURL(path.join(root, 'out/renderer/')).href}">`);
   const file = path.join(output, 'fixture.html'); fs.writeFileSync(file, html);
-  const win = new BrowserWindow({ show: false, width: 1440, height: 950,
-    webPreferences: { sandbox: true, backgroundThrottling: false } });
   try {
-    await win.loadFile(file);
+    await harness.window({ webPreferences: { sandbox: true, backgroundThrottling: false, offscreen: false } });
+    const win = harness.win;
+    await harness.loadUrl(pathToFileURL(file).href);
     win.webContents.debugger.attach('1.3');
     await win.webContents.debugger.sendCommand('DOM.enable');
     await win.webContents.debugger.sendCommand('CSS.enable');
-    const js = script => win.webContents.executeJavaScript(script);
+    const js = script => harness.js(script);
     await js(code);
     await js(`(() => {
       const models = [{ model: 'gpt-6-astra', reasoningEffort: 'high', assumed: false, tokens: 1200000 }];
@@ -308,6 +314,6 @@ app.whenReady().then(async () => {
     }
     assert.deepEqual(offCenter, [], 'Glyphs and figures sit optically centered: ' + JSON.stringify(offCenter));
     console.log('Settings layout passed: six pages, two themes, two widths, two zooms, live Usage renderer and long folder paths, centered marks.');
-  } finally { win.destroy(); }
-  app.exit(0);
-}).catch(error => { console.error(error); app.exit(1); });
+  } finally {}
+  harness.finish();
+}).catch(error => { console.error(error); harness.onError(error); });

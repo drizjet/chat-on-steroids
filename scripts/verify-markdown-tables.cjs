@@ -8,12 +8,15 @@ if (!process.versions.electron) {
   process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
   process.exit(result.status ?? 1);
 }
-const { app, BrowserWindow } = require('electron');
-app.whenReady().then(async () => {
-  const win = new BrowserWindow({ show: false, width: 1100, height: 800, webPreferences: { offscreen: true } });
+const { createHarness } = require('./lib/ui-harness.cjs');
+
+const harness = createHarness({ name: 'markdown-tables', height: 800 });
+
+harness.ready().then(async () => {
+  await harness.window();
   const css = fs.readFileSync(path.join(__dirname, '../src/renderer/styles.css'), 'utf8');
-  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<style>${css}</style><div id="fixture" style="margin:20px"><div class="msg rich"><div class="markdown-table"><table><tbody></tbody></table></div></div></div>`));
-  const results = await win.webContents.executeJavaScript(`(async () => {
+  await harness.loadHtml(`<style>${css}</style><div id="fixture" style="margin:20px"><div class="msg rich"><div class="markdown-table"><table><tbody></tbody></table></div></div></div>`);
+  const results = await harness.js(`(async () => {
     const fixture = document.getElementById('fixture'), viewport = document.querySelector('.markdown-table'), table = document.querySelector('table');
     const results = [];
     for (const width of [800, 360, 220]) {
@@ -36,5 +39,5 @@ app.whenReady().then(async () => {
     }
   }
   console.log('Markdown table geometry passed at 800/360/220px, including long tokens and 80-column overflow.');
-  win.destroy(); app.exit(0);
-}).catch(error => { console.error(error); app.exit(1); });
+  harness.finish();
+}).catch(error => harness.onError(error));

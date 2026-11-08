@@ -3,14 +3,20 @@
 // menu), recent chats show before anything is typed, matches are marked inside two-line snippets, long
 // titles stay on one line, the keyboard moves through results, Enter opens one, and Escape or a click
 // outside closes the dialog while the sidebar lists never move.
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
 const root = process.env.COS_UI_ROOT || path.resolve(__dirname, '..');
 const output = path.resolve(process.env.COS_UI_OUTPUT || path.join(root, '.tmp', 'chat-search'));
 const { fixtureConfigSource, BENIGN_RENDERER_ERRORS } = require(path.join(root, 'scripts/fixtures/app-defaults.cjs'));
-app.setPath('userData', path.join(output, 'profile')); app.disableHardwareAcceleration();
-const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-let server, win;
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
+const harness = createHarness({ name: 'chat-search', width: 1280, height: 800, userData: path.join(output, 'profile'), output, ignoreErrors: BENIGN_RENDERER_ERRORS });
+harness.app.disableHardwareAcceleration();
+let server;
 const fixture = `(() => {
  const old=window.api,f=composerFixture,ok=data=>Promise.resolve({ok:true,data:structuredClone(data)});
  f.summary.title='Write a haiku about snow'; f.summary.updatedAt=Date.now()-3*3600000; f.summary.lastToolCallAt=null; f.summary.activityExpiresAt=null;
@@ -46,7 +52,7 @@ const fixture = `(() => {
  };
  window.api=new Proxy(methods,{get:(target,key)=>key in target?target[key]:old[key]});
 })();`;
-app.whenReady().then(async () => {
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   server = await createServer({ configFile:false, root:path.join(root,'src/renderer'), cacheDir:path.join(output,'vite'), logLevel:'error',
     resolve:{alias:{'@phosphor-icons/web':path.join(root,'node_modules/@phosphor-icons/web/src')}},
@@ -54,18 +60,19 @@ app.whenReady().then(async () => {
     plugins:[{name:'chat-search-fixture',transformIndexHtml:html=>html.replace('</head>','<script src="/timeline-fixture.js"></script></head>'),
       configureServer(vite){vite.middlewares.use((req,res,next)=>{if(req.url!=='/timeline-fixture.js')return next();res.setHeader('Content-Type','text/javascript');res.end(fixtureConfigSource()+fs.readFileSync(path.join(root,'scripts/fixtures/composer-ui.js'),'utf8')+fixture);});}}] });
   await server.listen();
-  win = new BrowserWindow({show:false,width:1280,height:800,webPreferences:{sandbox:true,offscreen:true,backgroundThrottling:false}});
+  await harness.window({ webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
+  const win = harness.win;
   const errors=[];
   win.webContents.on('console-message',e=>{if(e.level==='error'&&!BENIGN_RENDERER_ERRORS.includes(e.message))errors.push(e.message);});
-  const js=code=>win.webContents.executeJavaScript(code);
-  const until=async expression=>{for(const deadline=Date.now()+15000;Date.now()<deadline;){if(await js(expression))return;await pause(40);}throw new Error('Timed out: '+expression);};
-  const settle=async()=>{await js(`document.getAnimations().forEach(a=>{if(a.effect.getTiming().iterations!==Infinity)a.finish()})`);await pause(180);};
+  const js=code=>harness.js(code);
+  const until=async expression=>{for(const deadline=Date.now()+15000;Date.now()<deadline;){if(await js(expression))return;await harness.pause(40);}throw new Error('Timed out: '+expression);};
+  const settle=async()=>{await js(`document.getAnimations().forEach(a=>{if(a.effect.getTiming().iterations!==Infinity)a.finish()})`);await harness.pause(180);};
   const capture=async name=>{await settle();fs.mkdirSync(output,{recursive:true});fs.writeFileSync(path.join(output,name),(await win.webContents.capturePage()).toPNG());};
-  const key=async name=>{win.webContents.sendInputEvent({type:'keyDown',keyCode:name});win.webContents.sendInputEvent({type:'keyUp',keyCode:name});await pause(150);};
+  const key=async name=>{win.webContents.sendInputEvent({type:'keyDown',keyCode:name});win.webContents.sendInputEvent({type:'keyUp',keyCode:name});await harness.pause(150);};
   const mac = process.platform === 'darwin';
-  await win.loadURL(server.resolvedUrls.local[0]);
+  await harness.loadUrl(server.resolvedUrls.local[0]);
   await until(`!!document.querySelector('#sessionList [data-id="search-chat-0"]')`);
-  win.show(); win.focus(); win.webContents.focus(); await pause(100);
+  win.show(); win.focus(); win.webContents.focus(); await harness.pause(100);
 
   for (const theme of ['dark','light']) {
     await js(`setTheme(${JSON.stringify(theme)})`);
@@ -149,7 +156,7 @@ app.whenReady().then(async () => {
   win.webContents.insertText('bridge');
   await until(`document.querySelectorAll('#searchResults .search-result[data-search-id]').length===3`);
   // The same query typed again repaints after the typing pause; wait it out before moving focus.
-  await pause(400);
+  await harness.pause(400);
   await key('Down');
   assert.equal(await js(`document.activeElement.dataset.searchId`),'search-chat-0');
   await key('Down');
@@ -178,7 +185,7 @@ app.whenReady().then(async () => {
   await js(`document.getElementById('chatSearch').select()`);
   win.webContents.insertText('installer');
   await until(`document.querySelectorAll('#searchResults .search-result[data-search-id]').length===1&&document.querySelector('#searchResults .search-result[data-search-id]').dataset.searchId==='search-chat-1'`);
-  await pause(300);
+  await harness.pause(300);
   await key('Return');
   await until(`!!document.querySelector('#timeline .is-search-hit')`);
   const hit=await js(`(()=>{const r=document.querySelector('#timeline .is-search-hit'),p=document.getElementById('chatBody').getBoundingClientRect(),b=r.getBoundingClientRect();return {text:r.textContent,inView:b.top>=p.top&&b.bottom<=p.bottom,newest:document.getElementById('timeline').textContent.includes('Message number 240 '),paged:pages.some(o=>o.before!==undefined)}})()`);
@@ -199,5 +206,12 @@ app.whenReady().then(async () => {
   assert.ok((await js('searches')).length<=12,'Typing is debounced into few searches: '+JSON.stringify(await js('searches')));
   assert.deepEqual(errors,[]);
   console.log('PASS: chat search dialog in both themes: icon beside the app name, recent chats, marked snippets, long titles, ⌘K/Ctrl+K and its labels, keyboard, Enter, word order, no match, Escape, a click outside, opening at the matching message, and Jump to latest from there');
-  win.destroy();await server.close();app.exit(0);
-}).catch(async error=>{fs.mkdirSync(output,{recursive:true});if(win&&!win.isDestroyed())fs.writeFileSync(path.join(output,'failure.png'),(await win.webContents.capturePage()).toPNG());console.error(error);await server?.close();app.exit(1);});
+  await server.close();
+  harness.finish();
+}).catch(async error=>{
+  fs.mkdirSync(output,{recursive:true});
+  if(harness.win&&!harness.win.isDestroyed()){try{fs.writeFileSync(path.join(output,'failure.png'),(await harness.win.webContents.capturePage()).toPNG());}catch{}}
+  console.error(error);
+  await server?.close();
+  harness.onError(error);
+});

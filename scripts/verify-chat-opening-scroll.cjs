@@ -11,10 +11,11 @@ if (!process.versions.electron) {
   process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
   process.exit(result.status ?? 1);
 }
-const { app, BrowserWindow } = require('electron');
-app.whenReady().then(async () => {
-  const root = path.join(__dirname, '..');
-  const output = path.join(root, 'outputs/chat-opening-scroll');
+const { createHarness } = require('./lib/ui-harness.cjs');
+const root = path.join(__dirname, '..');
+const output = path.join(root, 'outputs/chat-opening-scroll');
+const harness = createHarness({ name: 'chat-opening-scroll', width: 1400, height: 900, output });
+harness.ready().then(async () => {
   fs.mkdirSync(output, { recursive: true });
   const built = await require('esbuild').build({ entryPoints: [path.join(root, 'src/renderer/chat.ts')],
     bundle: true, write: false, platform: 'browser', format: 'iife', globalName: 'chat',
@@ -37,13 +38,13 @@ app.whenReady().then(async () => {
     built.outputFiles.filter(file=>file.path.endsWith('.css')).map(file=>file.text).join('\n');
   const html = withoutScripts(fs.readFileSync(path.join(root, 'src/renderer/index.html'), 'utf8')).replace(/<link\b[^>]*>/g, '')
     .replace('</head>', `<style>${css}</style></head>`);
-  const win = new BrowserWindow({ show: false, width: 1400, height: 900,
-    webPreferences: { sandbox: true, backgroundThrottling: false } });
-  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
-  assert.equal(await win.webContents.executeJavaScript(`Promise.all(['CoS Phosphor','CoS Phosphor Fill']
+  await harness.window({ webPreferences: { sandbox: true, backgroundThrottling: false, offscreen: false } });
+  const win = harness.win;
+  await harness.loadHtml(html);
+  assert.equal(await harness.js(`Promise.all(['CoS Phosphor','CoS Phosphor Fill']
     .map(name=>document.fonts.load('16px "'+name+'"'))).then(faces=>faces.every(face=>face.length>0))`), true,
     'The actual bundled icon faces must load before capturing visual evidence');
-  await win.webContents.executeJavaScript(`(() => {
+  await harness.js(`(() => {
     const ok = data => Promise.resolve({ok:true, data});
     let sessionChanged = null;
     const rows = (id, count) => Array.from({length:count}, (_, i) => ({seq:i+1, time:1+i,
@@ -78,8 +79,8 @@ app.whenReady().then(async () => {
       throw new Error('Timed out waiting for synthetic session refresh');
     };
   })()`);
-  await win.webContents.executeJavaScript(code);
-  const results = await win.webContents.executeJavaScript(`(async () => {
+  await harness.js(code);
+  const results = await harness.js(`(async () => {
     chat.initChat({state:()=>null, save:async()=>{}}); chat.chatVisible(true);
     const frame = () => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
     await frame();
@@ -140,5 +141,5 @@ app.whenReady().then(async () => {
   assert.deepEqual(results.nearTailRefreshes,[results.nearTail,results.nearTail,results.nearTail], 'Other sessions cannot reclaim a near-tail reading position');
   assert.deepEqual(results.unrelatedReads,[0,0,0], 'Another session\'s activity refreshes the catalog without rereading this transcript');
   console.log('Chat opening passed: initial open, A/B/A cycles, long first message, near-tail background refresh and live reader position.');
-  win.destroy(); app.exit(0);
-}).catch(error => { console.error(error); app.exit(1); });
+  harness.finish();
+}).catch(error => { console.error(error); harness.onError(error); });

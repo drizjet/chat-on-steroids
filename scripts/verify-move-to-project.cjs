@@ -1,5 +1,9 @@
 // Move a chat to a project, by its menu or by dragging, with Undo, and date headings in the chat lists (#1919).
 // Isolated renderer/Chromium acceptance; no backend.
+const { withoutScripts } = require('./ui-check-page.cjs');
+const fs = require('node:fs');
+const path = require('node:path');
+const assert = require('node:assert/strict');
 if (!process.versions.electron) {
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
   const result = require('node:child_process').spawnSync(require('electron'), [__filename],
@@ -7,18 +11,14 @@ if (!process.versions.electron) {
   process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
   process.exit(result.status ?? 1);
 }
-const { withoutScripts } = require('./ui-check-page.cjs');
-const { app, BrowserWindow } = require('electron');
-const fs = require('node:fs');
-const path = require('node:path');
-const assert = require('node:assert/strict');
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = path.resolve(__dirname, '..');
 const { fixtureConfigSource } = require('./fixtures/app-defaults.cjs');
 const output = path.join(root, 'outputs/move-to-project');
 // Electron refuses a userData folder that does not exist yet, as on a fresh checkout.
 fs.mkdirSync(path.join(output, 'runtime'), { recursive: true });
-app.setPath('userData', path.join(output, 'runtime'));
-app.whenReady().then(async () => {
+const harness = createHarness({ name: 'move-to-project', width: 1100, height: 1300, userData: path.join(output, 'runtime'), output });
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   const fixture = `
     if (new URL(location.href).searchParams.has('reset')) { localStorage.removeItem('chat-on-steroids.sidebar-order'); localStorage.removeItem('chat-on-steroids.sidebar-pins'); }
@@ -98,23 +98,23 @@ app.whenReady().then(async () => {
         response.setHeader('Content-Type','text/html'); response.end(await vite.transformIndexHtml('/fixture.html',source));
       });
     }}] });
-  let win;
   try {
     await server.listen(); fs.mkdirSync(output,{recursive:true});
     // Tall enough that a dragged chat and the project it goes into are both on screen.
-    win = new BrowserWindow({show:false,width:1100,height:1300,webPreferences:{sandbox:true,backgroundThrottling:false}});
-    const js = code=>win.webContents.executeJavaScript(code);
+    await harness.window({ webPreferences: { sandbox: true, backgroundThrottling: false, offscreen: false } });
+    const win = harness.win;
+    const js = code=>harness.js(code);
     const until = async (code, message) => {
-      for (let i=0;i<200;i++) { if (await js(code)) return; await new Promise(r=>setTimeout(r,15)); }
+      for (let i=0;i<200;i++) { if (await js(code)) return; await harness.pause(15); }
       assert.fail(message + ' — ' + code);
     };
     const screenshot = async name => {
       await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
-      await new Promise(r=>setTimeout(r,200));
+      await harness.pause(200);
       fs.writeFileSync(path.join(output,name),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
     };
     const load = async query => {
-      await win.loadURL(server.resolvedUrls.local[0]+'fixture.html'+query);
+      await harness.loadUrl(server.resolvedUrls.local[0]+'fixture.html'+query);
       win.webContents.setZoomFactor(1);
       await until('!!window.fixtureReady && document.querySelectorAll(".project-group").length === 2', 'fixture');
       await js(`Promise.all(['CoS Phosphor','CoS Phosphor Fill'].map(name=>document.fonts.load('16px "'+name+'"')))`);
@@ -192,9 +192,9 @@ app.whenReady().then(async () => {
     assert.ok(await reachable('[data-id="loose-0"] .sess-top', from) && await reachable('[data-project-id="second-project"] > summary', onto),
       'both ends of the drag are visible in the list: '+JSON.stringify({from,onto}));
     win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...from});
-    await new Promise(r=>setTimeout(r,25));
+    await harness.pause(25);
     win.webContents.sendInputEvent({type:'mouseMove',x:from.x,y:from.y-12});
-    await new Promise(r=>setTimeout(r,25));
+    await harness.pause(25);
     win.webContents.sendInputEvent({type:'mouseMove',...onto});
     try {
       await until(`document.querySelector('[data-project-id="second-project"] > summary').classList.contains('is-drop-target')`, 'project row highlighted');
@@ -223,9 +223,9 @@ app.whenReady().then(async () => {
     assert.ok(await reachable('[data-id="loose-0"] .sess-top', chat) && await reachable('[data-group-id="g-italian"] > summary', group),
       'both ends of the drag are visible in the list: '+JSON.stringify({chat,group}));
     win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...chat});
-    await new Promise(r=>setTimeout(r,25));
+    await harness.pause(25);
     win.webContents.sendInputEvent({type:'mouseMove',x:chat.x,y:chat.y-12});
-    await new Promise(r=>setTimeout(r,25));
+    await harness.pause(25);
     win.webContents.sendInputEvent({type:'mouseMove',...group});
     await until(`document.querySelector('[data-group-id="g-italian"] > summary').classList.contains('is-drop-target')`, 'group highlighted');
     win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...group});
@@ -240,15 +240,15 @@ app.whenReady().then(async () => {
     await frame('[data-id="other-task"] .sess-top', '[data-project-id="demo-project"] > summary');
     const third = await at('[data-id="other-task"] .sess-top');
     win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...third});
-    await new Promise(r=>setTimeout(r,25));
+    await harness.pause(25);
     win.webContents.sendInputEvent({type:'mouseMove',x:third.x,y:third.y-12});
-    await new Promise(r=>setTimeout(r,25));
+    await harness.pause(25);
     win.webContents.sendInputEvent({type:'mouseMove',...(await at('[data-project-id="demo-project"] > summary'))});
     await until(`document.querySelectorAll('.is-drop-target').length === 1`, 'highlighted before Escape');
     win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'}); win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});
     await until(`document.querySelectorAll('.is-drop-target').length === 0`, 'highlight cleared');
     win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...(await at('[data-project-id="demo-project"] > summary'))});
-    await new Promise(r=>setTimeout(r,100));
+    await harness.pause(100);
     assert.equal((await js('window.moveCalls')).length, calls, 'Escape cancels the drop');
     assert.equal(await js(place('other-task')), 'second-project');
 
@@ -280,5 +280,6 @@ app.whenReady().then(async () => {
     await load('?reset=1&theme=light');
     await screenshot('date-sections-light.png');
     console.log(JSON.stringify({headings:true,menu:true,toast:true,undo:true,dragProject:true,dragGroup:true,escape:true,output}));
-  } finally { win?.destroy(); await server.close(); app.quit(); }
-}).catch(error=>{console.error(error);app.exit(1)});
+  } finally { await server.close(); }
+  harness.finish();
+}).catch(error=>{console.error(error);harness.onError(error)});

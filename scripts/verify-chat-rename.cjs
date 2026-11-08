@@ -1,14 +1,20 @@
 // Production renderer and real Chromium layout/input; synthetic conversations only (#1107).
 // Naming a chat in the sidebar: the field takes the row (the hover actions step aside), survives the
 // sidebar's activity repaints as the same node, and Enter, Escape and an empty name do what they say.
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = process.env.COS_UI_ROOT || path.resolve(__dirname, '..');
 const output = path.resolve(process.env.COS_UI_OUTPUT || path.join(root, '.tmp', 'chat-rename'));
 const { fixtureConfigSource, BENIGN_RENDERER_ERRORS } = require(path.join(root, 'scripts/fixtures/app-defaults.cjs'));
-app.setPath('userData', path.join(output, 'profile')); app.disableHardwareAcceleration();
-const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-let server, win;
+const harness = createHarness({ name: 'chat-rename', width: 1280, height: 800, userData: path.join(output, 'profile'), output, ignoreErrors: BENIGN_RENDERER_ERRORS });
+harness.app.disableHardwareAcceleration();
+let server;
 const fixture = `(() => {
  const old=window.api,f=composerFixture,ok=data=>Promise.resolve({ok:true,data:structuredClone(data)});
  f.summary.title='Write a haiku about snow. Do not use any tools.';
@@ -29,7 +35,7 @@ const fixture = `(() => {
  };
  window.api=new Proxy(methods,{get:(target,key)=>key in target?target[key]:old[key]});
 })();`;
-app.whenReady().then(async () => {
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   server = await createServer({ configFile:false, root:path.join(root,'src/renderer'), cacheDir:path.join(output,'vite'), logLevel:'error',
     resolve:{alias:{'@phosphor-icons/web':path.join(root,'node_modules/@phosphor-icons/web/src')}},
@@ -37,21 +43,20 @@ app.whenReady().then(async () => {
     plugins:[{name:'chat-rename-fixture',transformIndexHtml:html=>html.replace('</head>','<script src="/timeline-fixture.js"></script></head>'),
       configureServer(vite){vite.middlewares.use((req,res,next)=>{if(req.url!=='/timeline-fixture.js')return next();res.setHeader('Content-Type','text/javascript');res.end(fixtureConfigSource()+fs.readFileSync(path.join(root,'scripts/fixtures/composer-ui.js'),'utf8')+fixture);});}}] });
   await server.listen();
-  win = new BrowserWindow({show:false,width:1280,height:800,webPreferences:{sandbox:true,offscreen:true,backgroundThrottling:false}});
-  const errors=[];
-  win.webContents.on('console-message',e=>{if(e.level==='error'&&!BENIGN_RENDERER_ERRORS.includes(e.message))errors.push(e.message);});
-  const js=code=>win.webContents.executeJavaScript(code);
-  const until=async expression=>{for(const deadline=Date.now()+15000;Date.now()<deadline;){if(await js(expression))return;await pause(40);}throw new Error('Timed out: '+expression);};
-  const settle=async()=>{await js(`document.getAnimations().forEach(a=>{if(a.effect.getTiming().iterations!==Infinity)a.finish()})`);await pause(180);};
+  await harness.window({ webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
+  const win = harness.win;
+  const js=code=>harness.js(code);
+  const until=async expression=>{await harness.until(expression, 15000);};
+  const settle=async()=>{await js(`document.getAnimations().forEach(a=>{if(a.effect.getTiming().iterations!==Infinity)a.finish()})`);await harness.pause(180);};
   const capture=async name=>{await settle();fs.mkdirSync(output,{recursive:true});fs.writeFileSync(path.join(output,name),(await win.webContents.capturePage()).toPNG());};
   const row=`document.querySelector('#sessionList [data-id="other-chat-1"]')`;
   const field=`document.querySelector('.sess-rename')`;
-  const key=async name=>{win.webContents.sendInputEvent({type:'keyDown',keyCode:name});win.webContents.sendInputEvent({type:'keyUp',keyCode:name});await pause(120);};
-  await win.loadURL(server.resolvedUrls.local[0]);
+  const key=async name=>{win.webContents.sendInputEvent({type:'keyDown',keyCode:name});win.webContents.sendInputEvent({type:'keyUp',keyCode:name});await harness.pause(120);};
+  await harness.loadUrl(server.resolvedUrls.local[0]);
   await until(`!!${row}?.querySelector('.row-menu-button')`);
   // Rename is an item of the row's menu (the "⋯" button, or a right click on the row).
   const rename=async()=>{await js(`${row}.querySelector('.row-menu-button').click()`);await until(`!!document.querySelector('.row-menu [data-row-action="rename"]')`);await js(`document.querySelector('.row-menu [data-row-action="rename"]').click()`);};
-  win.show(); win.focus(); win.webContents.focus(); await pause(100);
+  win.show(); win.focus(); win.webContents.focus(); await harness.pause(100);
 
   for (const theme of ['dark','light']) {
     await js(`setTheme(${JSON.stringify(theme)})`);
@@ -88,9 +93,9 @@ app.whenReady().then(async () => {
   assert.equal(editing,true);
   await js(`${field}.select()`);
   win.webContents.insertText('Bridge');
-  await js('repaint()'); await pause(150);
+  await js('repaint()'); await harness.pause(150);
   win.webContents.insertText(' work');
-  await js('repaint()'); await pause(150);
+  await js('repaint()'); await harness.pause(150);
   assert.equal(await js(`${field}===window.editingField`),true,'Repaints keep the same field');
   assert.equal(await js(`${field}.value`),'Bridge work');
   await key('Enter');
@@ -108,7 +113,14 @@ app.whenReady().then(async () => {
   await until(`renames.length===2`);
   assert.deepEqual(await js('renames[1]'),['other-chat-1',null]);
   await until(`${row}.querySelector('.sess-top b')?.textContent==='Fix the flaky bridge test'`);
-  assert.deepEqual(errors,[]);
+  assert.deepEqual(harness.pageErrors,[]);
   console.log('PASS: chat naming field layout in both themes, Escape, repaints during typing, Enter and clearing');
-  win.destroy();await server.close();app.exit(0);
-}).catch(async error=>{fs.mkdirSync(output,{recursive:true});if(win&&!win.isDestroyed())fs.writeFileSync(path.join(output,'failure.png'),(await win.webContents.capturePage()).toPNG());console.error(error);await server?.close();app.exit(1);});
+  await server.close();
+  harness.finish();
+}).catch(async error=>{
+  fs.mkdirSync(output,{recursive:true});
+  if(harness.win&&!harness.win.isDestroyed()){try{fs.writeFileSync(path.join(output,'failure.png'),(await harness.win.webContents.capturePage()).toPNG());}catch{}}
+  console.error(error);
+  await server?.close();
+  harness.onError(error);
+});

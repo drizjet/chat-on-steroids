@@ -1,23 +1,31 @@
 // Isolated production CSS/markup: focus and picker repaints must not move settings.
 const { withoutScripts } = require('./ui-check-page.cjs');
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const { pathToFileURL } = require('node:url');
 const root = path.join(__dirname, '..');
 const output = path.join(root, 'outputs/settings-focus');
-app.setPath('userData', path.join(output, 'runtime'));
-app.whenReady().then(async () => {
+const { createHarness } = require('./lib/ui-harness.cjs');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+
+const harness = createHarness({ name: 'settings-focus', width: 1000, height: 900, userData: path.join(output, 'runtime'), output });
+
+harness.ready().then(async () => {
   fs.mkdirSync(output, { recursive: true });
-  const win = new BrowserWindow({ show: false, width: 1000, height: 900,
-    webPreferences: { sandbox: true, backgroundThrottling: false } });
+  await harness.window();
+  const win = harness.win;
   try {
     const html = withoutScripts(fs.readFileSync(path.join(root, 'out/renderer/index.html'), 'utf8'))
       .replace('<head>', `<head><base href="${pathToFileURL(path.join(root, 'out/renderer/')).href}">`);
     const fixture = path.join(output, 'fixture.html'); fs.writeFileSync(fixture, html);
     await win.loadFile(fixture);
-    const js = code => win.webContents.executeJavaScript(code, true);
+    const js = (code) => harness.js(code, true);
     const settle = () => js(`(async () => {
       for (const a of document.getAnimations()) if (Number.isFinite(a.effect.getComputedTiming().endTime)) a.finish();
       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
@@ -33,8 +41,6 @@ app.whenReady().then(async () => {
     await js('document.fonts.ready');
     for (const theme of ['dark', 'light']) for (const zoom of [1, 1.17, 1.5]) for (const id of ['uiLanguage', 'goalBackend']) {
       win.webContents.setZoomFactor(zoom);
-      // In view first: focusing a control below the fold scrolls it there, which moves every row and
-      // every pixel together without being the shift this check looks for.
       await js(`document.documentElement.dataset.theme='${theme}'; document.activeElement.blur(); document.getElementById('${id}').scrollIntoView({ block: 'nearest' }); new Promise(r=>setTimeout(r,250))`);
       await settle();
       const before = await js('geometry()');
@@ -54,8 +60,8 @@ app.whenReady().then(async () => {
         return (rect.bottom>pane.bottom || rect.top<pane.top) && (hit===option || option.contains(hit));
       })()`), true, 'The top-layer option outside the card must remain clickable');
       await capture('open');
-      win.webContents.sendInputEvent({type:'keyDown',keyCode:'ESCAPE'});
-      win.webContents.sendInputEvent({type:'keyUp',keyCode:'ESCAPE'});
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'ESCAPE' });
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'ESCAPE' });
       await js('new Promise(r=>setTimeout(r,200))');
       assert.equal(await js(`document.getElementById('${id}').matches(':open')`), false);
       await capture('closed');
@@ -64,15 +70,22 @@ app.whenReady().then(async () => {
       const after = await win.webContents.capturePage();
       const a = baseline.toBitmap(), b = after.toBitmap(), size = baseline.getSize();
       let changed = 0, material = 0; const points = [];
-      for (let y=0;y<size.height;y++) for(let x=0;x<size.width;x++) {
-        const i=(y*size.width+x)*4;
-        const delta = Math.max(...[0,1,2].map(c => Math.abs(a[i+c]-b[i+c])));
-        if(delta) { changed++; if(delta>2) material++; if(points.length<10) points.push({x,y,a:[...a.subarray(i,i+4)],b:[...b.subarray(i,i+4)]}); }
+      for (let y = 0; y < size.height; y++) for (let x = 0; x < size.width; x++) {
+        const i = (y * size.width + x) * 4;
+        const delta = Math.max(...[0, 1, 2].map(c => Math.abs(a[i + c] - b[i + c])));
+        if (delta) { changed++; if (delta > 2) material++; if (points.length < 10) points.push({ x, y, a: [...a.subarray(i, i + 4)], b: [...b.subarray(i, i + 4)] }); }
       }
-      // Fractional DPI can re-rasterize a few edge pixels by 1–2 channel levels.
-      // Geometry and hit targets remain exact; visible residue must still fail.
-      assert.ok(material === 0 && changed <= 100, JSON.stringify({theme,zoom,id,changedPixelsAfterBlur:changed,material,points}));
+      assert.ok(material === 0 && changed <= 100, JSON.stringify({ theme, zoom, id, changedPixelsAfterBlur: changed, material, points }));
     }
     console.log('Settings focus geometry passed: ' + output);
-  } finally { win.destroy(); app.quit(); }
-}).catch(error => { console.error(error); app.exit(1); });
+    harness.finish();
+  } catch (error) {
+    fs.mkdirSync(output, { recursive: true });
+    if (!win.isDestroyed()) fs.writeFileSync(path.join(output, 'failure.png'), (await win.webContents.capturePage()).toPNG());
+    console.error(error);
+    harness.onError(error);
+  }
+}).catch(error => {
+  console.error(error);
+  harness.onError(error);
+});

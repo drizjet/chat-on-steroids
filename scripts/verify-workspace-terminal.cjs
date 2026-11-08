@@ -1,9 +1,15 @@
 // Isolated Electron + actual project/projectless PTYs + current renderer. No provider or production state.
 const { withoutScripts } = require('./ui-check-page.cjs');
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = path.resolve(__dirname, '..');
 // PowerShell on Windows, the login shell elsewhere. Every command prints a marker the checks wait for.
 const WINDOWS = process.platform === 'win32';
@@ -28,12 +34,12 @@ const sh = WINDOWS ? {
 };
 const output = path.join(root, 'outputs/terminal-acceptance');
 fs.mkdirSync(output, { recursive: true });
-app.setPath('userData', path.join(output, 'runtime'));
+const harness = createHarness({ name: 'workspace-terminal', width: 1100, height: 800, userData: path.join(output, 'runtime'), output });
 // Without a listener, destroying the only window quits Electron at once, before the cleanup below
 // can wait for the shell the check closed last. Its ConPTY exit then lands while Node tears down,
 // which aborts the process with 0xC0000409 on Windows (3 in 30 runs on a test VM, 2026-10-10).
-app.on('window-all-closed', () => {});
-app.whenReady().then(async () => {
+harness.app.on('window-all-closed', () => {});
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   const { buildSync } = require('esbuild');
   const helper = path.join(output, 'main.cjs');
@@ -60,10 +66,6 @@ app.whenReady().then(async () => {
       onTerminalEvent:listener=>{const fn=(_,value)=>listener(value);ipcRenderer.on('workspaceTerminal:event',fn);return()=>ipcRenderer.removeListener('workspaceTerminal:event',fn)},
       writeClipboard:()=>Promise.resolve({ok:true,data:true})
     });`);
-  // A hidden window on Windows advances no animations, so the docks' slide-in never settles there
-  // and a click is measured mid-drawer. Shown, it behaves like the app itself (2026-10-06, VM 141).
-  let win = new BrowserWindow({ show: WINDOWS, width: 1100, height: 800, webPreferences: { preload, sandbox: true, contextIsolation: true, backgroundThrottling: false } });
-  backend.registerWorkspaceTerminalIpc(() => win);
   const fixture = `
     window.errors=[];window.addEventListener('error',e=>window.errors.push(e.message));window.addEventListener('unhandledrejection',e=>window.errors.push(String(e.reason)));
     window.ids=[];window.outputs={};window.exits={};
@@ -94,22 +96,28 @@ app.whenReady().then(async () => {
       response.setHeader('Content-Type', 'text/html'); response.end(await vite.transformIndexHtml('/fixture.html', source));
     });
   } }] });
-  const js = code => win.webContents.executeJavaScript(code);
-  const click = async selector => {
-    // Docks slide in (panel-motion.ts); measure the target at rest, not mid-drawer.
-    await js('Promise.race([Promise.all(document.getAnimations().filter(animation => animation.effect?.getComputedTiming().endTime !== Infinity).map(animation => animation.finished.catch(() => undefined))), new Promise(resolve => setTimeout(resolve, 1500))])');
-    const point = await js(`(()=>{const node=document.querySelector(${JSON.stringify(selector)});const rect=node.getBoundingClientRect();const x=Math.round(rect.left+rect.width/2),y=Math.round(rect.top+rect.height/2);return {x,y,target:document.elementFromPoint(x,y)?.outerHTML.slice(0,120)}})()`);
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: point.x, y: point.y, button: 'left', clickCount: 1 });
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: point.x, y: point.y, button: 'left', clickCount: 1 });
-    return point;
-  };
-  const until = async expression => { const end = Date.now() + 15_000; while (Date.now() < end) { if (await js(expression)) return; await new Promise(resolve => setTimeout(resolve, 40)); } throw new Error('Timeout: ' + expression + ' ' + JSON.stringify(await js('({errors,outputs})'))); };
   try {
-    await server.listen(); await win.loadURL(server.resolvedUrls.local[0] + 'fixture.html'); await until('window.ready');
+    // A hidden window on Windows advances no animations, so the docks' slide-in never settles there
+    // and a click is measured mid-drawer. Shown, it behaves like the app itself (2026-10-06, VM 141).
+    await harness.window({ webPreferences: { preload, sandbox: true, contextIsolation: true, backgroundThrottling: false } });
+    const win = harness.win;
+    if (WINDOWS) win.show();
+    backend.registerWorkspaceTerminalIpc(() => win);
+    const js = code => harness.js(code);
+    const click = async selector => {
+      // Docks slide in (panel-motion.ts); measure the target at rest, not mid-drawer.
+      await js('Promise.race([Promise.all(document.getAnimations().filter(animation => animation.effect?.getComputedTiming().endTime !== Infinity).map(animation => animation.finished.catch(() => undefined))), new Promise(resolve => setTimeout(resolve, 1500))])');
+      const point = await js(`(()=>{const node=document.querySelector(${JSON.stringify(selector)});const rect=node.getBoundingClientRect();const x=Math.round(rect.left+rect.width/2),y=Math.round(rect.top+rect.height/2);return {x,y,target:document.elementFromPoint(x,y)?.outerHTML.slice(0,120)}})()`);
+      win.webContents.sendInputEvent({ type: 'mouseDown', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+      win.webContents.sendInputEvent({ type: 'mouseUp', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+      return point;
+    };
+    const until = async expression => { const end = Date.now() + 15_000; while (Date.now() < end) { if (await js(expression)) return; await harness.pause(40); } throw new Error('Timeout: ' + expression + ' ' + JSON.stringify(await js('({errors,outputs})'))); };
+    await server.listen(); await harness.loadUrl(server.resolvedUrls.local[0] + 'fixture.html'); await until('window.ready');
     await js("window.setTerminalProject(null);document.getElementById('terminalToggle').click()");
     await until(`ids.length===1 && document.querySelector("#workspaceTerminal .terminal-tab").textContent${TAB_LABEL}`);
     const homeId = await js('ids[0]');
-    assert.equal(await js('document.querySelector("#workspaceTerminal .terminal-screen").title'), app.getPath('home'));
+    assert.equal(await js('document.querySelector("#workspaceTerminal .terminal-screen").title'), harness.app.getPath('home'));
     await js(`window.api.terminalWrite(${JSON.stringify(homeId)}, ${JSON.stringify(sh.home + '\r')})`);
     await until(`outputs[${JSON.stringify(homeId)}]?.includes('HOME_')`);
     await js("document.querySelector('#workspaceTerminal .terminal-tab .btn-icon').click()");
@@ -194,12 +202,12 @@ app.whenReady().then(async () => {
     while (!(await interrupted())) {
       assert.ok(Date.now() < interruptDeadline, 'Ctrl+C did not interrupt the sleep: ' + JSON.stringify(await js(`outputs[${JSON.stringify(second)}]`)));
       await js(`window.api.terminalWrite(${JSON.stringify(second)}, "\\u0003")`);
-      await new Promise(resolve => setTimeout(resolve, 250));
+      await harness.pause(250);
       await js(`window.api.terminalWrite(${JSON.stringify(second)}, ${JSON.stringify(sh.interrupt + '\r')})`);
       const attemptEnd = Date.now() + 1_500;
-      while (Date.now() < attemptEnd && !(await interrupted())) await new Promise(resolve => setTimeout(resolve, 40));
+      while (Date.now() < attemptEnd && !(await interrupted())) await harness.pause(40);
     }
-    win.setSize(830, 700); await new Promise(resolve => setTimeout(resolve, 300));
+    win.setSize(830, 700); await harness.pause(300);
     const geometry = await js(`(()=>{const p=document.getElementById('workspaceTerminal').getBoundingClientRect();return {width:p.width,height:p.height,fits:p.right<=innerWidth+1&&p.bottom<=innerHeight+1}})()`);
     assert.ok(geometry.fits, JSON.stringify(geometry));
     fs.writeFileSync(path.join(output, 'terminal.png'), (await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG());
@@ -213,8 +221,16 @@ app.whenReady().then(async () => {
     assert.deepEqual(await js('errors'), []);
     const result = { actualPty: true, projectCwd: true, projectlessHomeCwd: true, singleRightTabRow: true, rightTabClosesPty: true, rightPanelHidePreservesPty: true, persistentEnvironmentAndCd: true, keyboardInput: true, hiddenPanelContinuity: true, bottomPanelClose: true, bottomMenuVisible: true, rightMenuClickable: true, rightAndBottomIndependent: true, lastBottomTabClosesPanel: true, multipleTabs: true, ctrlC: true, exitCode: 7, closeRetiresShell: true, geometry };
     fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify(result));
-  } finally { win.destroy(); win = null; await server.close(); await backend.flushDurable(); await backend.workspaceTerminalsExited(); }
+  } finally {
+    await server.close();
+    await backend.flushDurable();
+    await backend.workspaceTerminalsExited();
+  }
   // Let Electron run before-quit so the IPC owner disposes any remaining PTYs before the
   // native ConPTY backend unloads. app.exit() skips those handlers and can crash Windows CI.
-  app.quit();
-}).catch(error => { console.error(error); app.exit(1); });
+  harness.finish();
+}).catch(async error => {
+  console.error(error);
+  try { await backend?.flushDurable?.(); await backend?.workspaceTerminalsExited?.(); } catch {}
+  harness.onError(error);
+});

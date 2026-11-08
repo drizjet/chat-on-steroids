@@ -14,11 +14,12 @@ if (!process.versions.electron) {
   if (result.error) console.error(result.error.message);
   process.exit(result.status ?? 1);
 }
-const { app, BrowserWindow } = require('electron');
-app.setPath('userData', path.resolve(__dirname, '../outputs/renderer-label-memory-runtime'));
-app.commandLine.appendSwitch('js-flags', '--expose-gc');
-app.whenReady().then(async () => {
-  const root = path.join(__dirname, '..');
+const root = path.join(__dirname, '..');
+const { createHarness } = require('./lib/ui-harness.cjs');
+const harness = createHarness({ name: 'renderer-label-memory', userData: path.join(root, 'outputs/renderer-label-memory-runtime') });
+harness.app.commandLine.appendSwitch('js-flags', '--expose-gc');
+
+harness.ready().then(async () => {
   const baseline = process.argv.indexOf('--baseline');
   const bundle = process.argv.indexOf('--bundle');
   const source = fs.readFileSync(baseline < 0 ? path.join(root, 'src/renderer/i18n.ts') : process.argv[baseline + 1], 'utf8');
@@ -26,19 +27,17 @@ app.whenReady().then(async () => {
     stdin: { contents: source, resolveDir: path.join(root, 'src/renderer'), loader: 'ts' },
     bundle: true, write: false, platform: 'browser', format: 'iife', globalName: 'labels',
   }).outputFiles[0].text;
-  const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true, backgroundThrottling: false } });
-  const deadline = setTimeout(() => { console.error('Renderer label stress timed out'); win.destroy(); app.exit(1); }, 60000);
+  await harness.window();
+  const win = harness.win;
+  const deadline = setTimeout(() => { console.error('Renderer label stress timed out'); win.destroy(); harness.onError(new Error('timeout')); }, 60000);
   try {
-    await win.loadURL('data:text/html,<main id="rows"></main>');
+    await harness.loadHtml('<main id="rows"></main>');
     await win.webContents.executeJavaScript(code + '\n;void 0;');
     win.webContents.debugger.attach('1.3');
     await win.webContents.debugger.sendCommand('HeapProfiler.collectGarbage');
     const before = await win.webContents.debugger.sendCommand('Runtime.getHeapUsage');
     const times = [];
     let during;
-    // Each refresh is a separate task. Collection at the end of the repaint
-    // models allocation pressure while rendering, when dereferenced WeakRefs
-    // are still kept alive by V8. Do not mask that with an idle GC between rows.
     for (let round = 0; round < 80; round++) {
       times.push(await win.webContents.executeJavaScript(`(() => {
         const start = performance.now();
@@ -73,6 +72,8 @@ app.whenReady().then(async () => {
     })()`);
     assert.equal(translated, '移除 0');
     console.log('PASS: row memory stays bounded and mounted labels still translate');
-  } finally { clearTimeout(deadline); win.destroy(); }
-  app.quit();
-}).catch(error => { console.error(error); app.exit(1); });
+  } finally {
+    clearTimeout(deadline);
+  }
+  harness.finish();
+}).catch(error => { console.error(error); harness.onError(error); });

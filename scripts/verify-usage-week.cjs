@@ -1,14 +1,20 @@
 // Real Chromium, production Usage renderer and CSS; isolated data, no provider or app backend.
 const { withoutScripts } = require('./ui-check-page.cjs');
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = path.resolve(__dirname, '..');
 const output = path.join(root, 'outputs/usage-weekly');
-app.setPath('userData', path.join(output, 'runtime'));
+const harness = createHarness({ name: 'usage-week', width: 1040, height: 850, userData: path.join(output, 'runtime'), output });
 
-app.whenReady().then(async () => {
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   const fixture = `
     localStorage.setItem('cos.usage.weekStart', '6');
@@ -41,13 +47,13 @@ app.whenReady().then(async () => {
         response.setHeader('Content-Type', 'text/html'); response.end(await vite.transformIndexHtml('/fixture.html', source));
       });
     } }] });
-  let win;
   try {
     fs.mkdirSync(output, { recursive: true }); await server.listen();
-    win = new BrowserWindow({ show: false, width: 1040, height: 850, webPreferences: { sandbox: true, backgroundThrottling: false } });
-    const js = source => win.webContents.executeJavaScript(source);
-    await win.loadURL(server.resolvedUrls.local[0] + 'fixture.html');
-    for (let i = 0; i < 100 && !await js('!!window.fixtureReady'); i++) await new Promise(resolve => setTimeout(resolve, 25));
+    await harness.window({ webPreferences: { sandbox: true, backgroundThrottling: false, offscreen: false } });
+    const win = harness.win;
+    const js = source => harness.js(source);
+    await harness.loadUrl(server.resolvedUrls.local[0] + 'fixture.html');
+    await harness.until('!!window.fixtureReady', 2500);
     assert.equal(await js('!!window.fixtureReady'), true, 'Fixture loads the production Usage module');
     assert.deepEqual(await js(`[document.getElementById('usageMessages56').textContent,document.getElementById('usageMessages6').textContent]`), ['35', '16']);
     assert.equal(await js(`document.getElementById('usageSummary').previousElementSibling.className`), 'settings-page-head', 'Usage opens directly with the summary');
@@ -69,7 +75,7 @@ app.whenReady().then(async () => {
           width:innerWidth, section:[a.left,a.right], button:[b.left,b.right]};
       })()`);
       await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await harness.pause(100);
       fs.writeFileSync(path.join(output, name + '.png'), (await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG());
       console.log(name, bounds);
       assert.equal(bounds.fits, true, name + ': no horizontal overflow');
@@ -84,9 +90,9 @@ app.whenReady().then(async () => {
     await js(`document.getElementById('usageWeekStart').focus()`);
     // Since the 2026-09-27 redesign this is a real select of seven days (Monday … Sunday),
     // operated from the keyboard alone.
-    const key = async code => { win.webContents.sendInputEvent({ type: 'keyDown', keyCode: code }); win.webContents.sendInputEvent({ type: 'keyUp', keyCode: code }); await new Promise(r => setTimeout(r, 150)); };
+    const key = async code => { win.webContents.sendInputEvent({ type: 'keyDown', keyCode: code }); win.webContents.sendInputEvent({ type: 'keyUp', keyCode: code }); await harness.pause(150); };
     // A native picker only opens in a shown window; showInactive keeps focus where the user has it.
-    win.showInactive(); win.webContents.focus(); await new Promise(r => setTimeout(r, 300));
+    win.showInactive(); win.webContents.focus(); await harness.pause(300);
     await js(`document.getElementById('usageWeekStart').focus()`);
     // Arrow down opens the picker on the current day (Saturday); the next one moves to Sunday.
     await key('Down'); await key('Down'); await key('Return');
@@ -97,5 +103,6 @@ app.whenReady().then(async () => {
     await js(`window.setFixtureLanguage('ja'); document.documentElement.dataset.theme='light'`);
     await capture('narrow-japanese-light');
     console.log('Usage week: bottom placement, compact rows, exact counts, native keyboard, persistence and two layouts passed.');
-  } finally { win?.destroy(); await server.close(); app.quit(); }
-}).catch(error => { console.error(error); app.exit(1); });
+  } finally { await server.close(); }
+  harness.finish();
+}).catch(error => { console.error(error); harness.onError(error); });

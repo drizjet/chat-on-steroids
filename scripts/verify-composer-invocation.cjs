@@ -1,16 +1,21 @@
 // Production renderer interaction proof for inline Skills and local-project file references.
 // Uses synthetic project data and the isolated IPC fixture; no account or user files.
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
+const { fixtureConfigSource, BENIGN_RENDERER_ERRORS } = require('./fixtures/app-defaults.cjs');
 const root = path.resolve(__dirname, '..');
 const output = path.join(root, '.tmp', 'composer-invocation');
-const { fixtureConfigSource, BENIGN_RENDERER_ERRORS } = require('./fixtures/app-defaults.cjs');
-app.setPath('userData', path.join(output, 'profile'));
-app.disableHardwareAcceleration();
+const harness = createHarness({ name: 'composer-invocation', width: 1440, height: 960, userData: path.join(output, 'profile'), output, ignoreErrors: BENIGN_RENDERER_ERRORS });
+harness.app.disableHardwareAcceleration();
 
-const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const injected = `(() => {
   const old = window.api;
   const ok = data => Promise.resolve({ ok: true, data: structuredClone(data) });
@@ -31,23 +36,8 @@ const injected = `(() => {
   }, { get: (target, key) => key in target ? target[key] : old[key] });
 })();`;
 
-let server, win;
-const js = source => win.webContents.executeJavaScript(source);
-const until = async (source, timeout = 5000) => {
-  for (const deadline = Date.now() + timeout; Date.now() < deadline;) {
-    if (await js(source)) return;
-    await pause(50);
-  }
-  throw new Error(`Timed out: ${source}`);
-};
-const capture = async name => {
-  win.webContents.invalidate();
-  await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-  await pause(700);
-  fs.mkdirSync(output, { recursive: true });
-  fs.writeFileSync(path.join(output, name), (await win.webContents.capturePage()).toPNG());
-};
-const typeAt = async (text, position) => js(`(() => {
+let server;
+const typeAt = async (text, position) => harness.js(`(() => {
   const input = document.getElementById('chatInput');
   input.value = ${JSON.stringify(text)};
   input.focus();
@@ -55,7 +45,7 @@ const typeAt = async (text, position) => js(`(() => {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 })()`);
 
-app.whenReady().then(async () => {
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   server = await createServer({ configFile: false, root: path.join(root, 'src', 'renderer'),
     cacheDir: path.join(output, 'vite'), logLevel: 'error',
@@ -70,51 +60,59 @@ app.whenReady().then(async () => {
     }); } }]
   });
   await server.listen();
-  win = new BrowserWindow({ show: true, width: 1440, height: 960,
-    webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
-  const errors = [];
-  win.webContents.on('console-message', event => { if (event.level === 'error' && !BENIGN_RENDERER_ERRORS.includes(event.message)) errors.push(event.message); });
-  await win.loadURL(server.resolvedUrls.local[0]);
+  await harness.window({ webPreferences: { sandbox: true, offscreen: true } });
+  const win = harness.win;
+  await harness.loadUrl(server.resolvedUrls.local[0]);
   win.webContents.setZoomFactor(1);
-  await until(`!!document.querySelector('#sessionList [data-id="composer-preview"]')`);
-  await js(`document.querySelector('#sessionList [data-id="composer-preview"]').click()`);
-  await until(`!document.getElementById('chatInput').disabled`);
+  const capture = async name => {
+    win.webContents.invalidate();
+    await harness.js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    await harness.pause(700);
+    await harness.shot(name);
+  };
+  await harness.until(`!!document.querySelector('#sessionList [data-id="composer-preview"]')`, 5000);
+  await harness.js(`document.querySelector('#sessionList [data-id="composer-preview"]').click()`);
+  await harness.until(`!document.getElementById('chatInput').disabled`, 5000);
 
   const slash = 'Please use /rev while checking this project.';
   await typeAt(slash, 'Please use /rev'.length);
-  await until(`!!document.querySelector('#skillPicker [data-skill-id="code-review"]')`);
-  await js(`document.getElementById('skillPicker').hidden = true`);
-  assert.equal(await js(`document.getElementById('chatInput').value`), slash);
+  await harness.until(`!!document.querySelector('#skillPicker [data-skill-id="code-review"]')`, 5000);
+  await harness.js(`document.getElementById('skillPicker').hidden = true`);
+  assert.equal(await harness.js(`document.getElementById('chatInput').value`), slash);
   await capture('before.png');
   await typeAt(slash, 'Please use /rev'.length);
-  await until(`!!document.querySelector('#skillPicker [data-skill-id="code-review"]')`);
-  assert.equal(await js(`!document.getElementById('skillPicker').hidden`), true);
-  assert.equal(await js(`document.getElementById('chatInput').value`), slash);
+  await harness.until(`!!document.querySelector('#skillPicker [data-skill-id="code-review"]')`, 5000);
+  assert.equal(await harness.js(`!document.getElementById('skillPicker').hidden`), true);
+  assert.equal(await harness.js(`document.getElementById('chatInput').value`), slash);
   await capture('slash-picker.png');
-  await js(`document.querySelector('#skillPicker [data-skill-id="code-review"]').click()`);
-  await until(`document.getElementById('chatInput').value === 'Please use code-review while checking this project.'`);
-  assert.equal(await js(`document.querySelector('#composerSelectedSkills [data-skill-id="code-review"]') !== null`), true);
-  await js(`document.querySelector('#composerSelectedSkills .composer-selected-skill-remove').click()`);
-  await until(`!document.querySelector('#composerSelectedSkills [data-skill-id="code-review"]')`);
+  await harness.js(`document.querySelector('#skillPicker [data-skill-id="code-review"]').click()`);
+  await harness.until(`document.getElementById('chatInput').value === 'Please use code-review while checking this project.'`, 5000);
+  assert.equal(await harness.js(`document.querySelector('#composerSelectedSkills [data-skill-id="code-review"]') !== null`), true);
+  await harness.js(`document.querySelector('#composerSelectedSkills .composer-selected-skill-remove').click()`);
+  await harness.until(`!document.querySelector('#composerSelectedSkills [data-skill-id="code-review"]')`, 5000);
 
   const mention = 'Please inspect @src in this project.';
   await typeAt(mention, 'Please inspect @src'.length);
-  await until(`!!document.querySelector('#skillPicker [data-file-path="src"]')`);
-  assert.equal(await js(`!document.getElementById('skillPicker').hidden`), true);
-  assert.equal(await js(`document.getElementById('chatInput').value`), mention);
+  await harness.until(`!!document.querySelector('#skillPicker [data-file-path="src"]')`, 5000);
+  assert.equal(await harness.js(`!document.getElementById('skillPicker').hidden`), true);
+  assert.equal(await harness.js(`document.getElementById('chatInput').value`), mention);
   await capture('file-picker.png');
-  await js(`document.querySelector('#skillPicker [data-file-path="src"]').click()`);
-  await until(`!!document.querySelector('#skillPicker [data-file-path="src/main.ts"]')`);
-  await js(`document.querySelector('#skillPicker [data-file-path="src/main.ts"]').click()`);
-  await until(`document.getElementById('chatInput').value === 'Please inspect @src/main.ts in this project.'`);
-  assert.deepEqual(errors, []);
+  await harness.js(`document.querySelector('#skillPicker [data-file-path="src"]').click()`);
+  await harness.until(`!!document.querySelector('#skillPicker [data-file-path="src/main.ts"]')`, 5000);
+  await harness.js(`document.querySelector('#skillPicker [data-file-path="src/main.ts"]').click()`);
+  await harness.until(`document.getElementById('chatInput').value === 'Please inspect @src/main.ts in this project.'`, 5000);
+  assert.deepEqual(harness.pageErrors, []);
   console.log('PASS: inline Skill and local-project file pickers preserve surrounding composer text');
-  win.destroy(); await server.close(); app.exit(0);
+  await server.close();
+  harness.finish();
 }).catch(async error => {
-  if (win && !win.isDestroyed()) {
-    fs.mkdirSync(output, { recursive: true });
-    fs.writeFileSync(path.join(output, 'failure.png'), (await win.webContents.capturePage()).toPNG());
+  if (harness.win && !harness.win.isDestroyed()) {
+    try {
+      fs.mkdirSync(output, { recursive: true });
+      fs.writeFileSync(path.join(output, 'failure.png'), (await harness.win.webContents.capturePage()).toPNG());
+    } catch {}
   }
   console.error(error);
-  await server?.close(); app.exit(1);
+  await server?.close();
+  harness.onError(error);
 });

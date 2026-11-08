@@ -1,15 +1,21 @@
 // The shared tunnel ID warning (#1340) in the production renderer: isolated Electron, no tunnel,
 // credentials or user data. Setup's Core field and the Plugins dialog name the connector that
 // shares the ID, while typing, and the warning goes away once each connector has its own.
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = path.resolve(__dirname, '..');
 const { fixtureConfigSource } = require('./fixtures/app-defaults.cjs');
 const output = path.join(root, 'outputs/shared-tunnel');
-app.setPath('userData', path.join(output, 'runtime'));
-app.whenReady().then(async () => {
+const harness = createHarness({ name: 'shared-tunnel', width: 1100, height: 900, userData: path.join(output, 'runtime'), output });
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   // Core and Plugins on one Secure Tunnel ID: the configuration from #1340.
   const fixture = `
@@ -55,21 +61,21 @@ app.whenReady().then(async () => {
         res.setHeader('Content-Type','text/html');res.end(await vite.transformIndexHtml('/fixture.html',html));
       });
     }}]});
-  let win;
   try {
     await server.listen();
-    win=new BrowserWindow({show:false,width:1100,height:900,webPreferences:{sandbox:true,backgroundThrottling:false}});
-    const js=code=>win.webContents.executeJavaScript(code);
+    await harness.window({ webPreferences: { sandbox: true, backgroundThrottling: false, offscreen: false } });
+    const win = harness.win;
+    const js=code=>harness.js(code);
     const frame=()=>js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
     // The app applies its own theme setting, so each theme is its own page load.
     const load=async theme=>{
-      await win.loadURL(server.resolvedUrls.local[0]+'fixture.html#'+theme);
-      for(let i=0;i<200 && !(await js('!!window.fixtureReady'));i++) await new Promise(resolve=>setTimeout(resolve,25));
+      await harness.loadUrl(server.resolvedUrls.local[0]+'fixture.html#'+theme);
+      await harness.until('!!window.fixtureReady', 5000);
       assert.equal(await js('!!window.fixtureReady'),true);
     };
     fs.mkdirSync(output,{recursive:true});
     const capture=async name=>{
-      await new Promise(resolve=>setTimeout(resolve,300)); await js('document.getAnimations().forEach(animation=>{if(animation.effect?.getTiming().iterations!==Infinity)animation.finish();})'); await frame();
+      await harness.pause(300); await js('document.getAnimations().forEach(animation=>{if(animation.effect?.getTiming().iterations!==Infinity)animation.finish();})'); await frame();
       fs.writeFileSync(path.join(output,name+'.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
     };
     const note=id=>js(`(() => {const n=document.getElementById('${id}'); return n ? {shown:!n.hidden && n.getBoundingClientRect().height>0, text:n.textContent} : null})()`);
@@ -97,7 +103,7 @@ app.whenReady().then(async () => {
 
     // The Plugins setup dialog: the same warning under its own field, live as well.
     await js(`document.getElementById('pluginsSetupLink').click()`);
-    for(let i=0;i<100 && !(await js(`!!document.getElementById('pluginsTunnelIdShared')`));i++) await new Promise(resolve=>setTimeout(resolve,25));
+    await harness.until(`!!document.getElementById('pluginsTunnelIdShared')`, 2500);
     const plugins=await note('pluginsTunnelIdShared');
     assert.equal(plugins?.shown,true,'The Plugins dialog shows the shared ID');
     assert.match(plugins.text,/also set for Core\./);
@@ -116,25 +122,25 @@ app.whenReady().then(async () => {
     // #1872: a saved Plugins ID can be turned off again; only that ID is cleared, and the dialog closes.
     win.setContentSize(1100,900);
     await js(`document.querySelector('[data-language="en"]').click();document.querySelector('[data-tab="plugins"]')?.click();document.getElementById('pluginsSetupLink').click()`);
-    for(let i=0;i<100 && !(await js(`!!document.getElementById('pluginsTunnelId')`));i++) await new Promise(resolve=>setTimeout(resolve,25));
+    await harness.until(`!!document.getElementById('pluginsTunnelId')`, 2500);
     const offButton=`[...document.querySelectorAll('#pluginDialog button')].find(node=>node.textContent==='Turn off Plugins connection')`;
     assert.equal(await js(`!!${offButton}`),true,'The Plugins dialog offers to turn off a saved connection');
     await capture('plugins-dialog-turn-off');
     const saved=await js('window.saves.length');
     await js(`${offButton}.click()`);
-    for(let i=0;i<100 && (await js('window.saves.length'))===saved;i++) await new Promise(resolve=>setTimeout(resolve,25));
+    await harness.until(`window.saves.length > ${saved}`, 2500);
     const patch=await js('window.saves.at(-1)');
     assert.equal(patch.tunnel.pluginsTunnelId,'','Turning off clears the Plugins ID');
     assert.equal(patch.tunnel.tunnelId,'tunnel_0123456789abcdef0123456789abcdef','Core keeps its ID');
     await frame();
     assert.equal(await js(`!!document.getElementById('pluginDialog')`),false,'The dialog closes');
     await js(`document.getElementById('pluginsSetupLink').click()`);
-    for(let i=0;i<100 && !(await js(`!!document.getElementById('pluginsTunnelId')`));i++) await new Promise(resolve=>setTimeout(resolve,25));
+    await harness.until(`!!document.getElementById('pluginsTunnelId')`, 2500);
     assert.equal(await js(`!!${offButton}`),false,'Nothing saved, nothing to turn off');
     await capture('plugins-dialog-off');
     console.log('Shared tunnel ID passed: Setup and the Plugins dialog name the other connector, live while typing, in both themes and German; a saved Plugins connection turns off.');
   } finally {
-    win?.destroy();await server.close();
+    await server.close();
   }
-  app.exit(0);
-}).catch(error=>{console.error(error);app.exit(1);});
+  harness.finish();
+}).catch(error=>{console.error(error);harness.onError(error);});

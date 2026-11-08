@@ -1,15 +1,21 @@
 // The chat stays at its end when its visible area shrinks (composer, docks), and keeps a reader's
 // place when they scrolled up. Isolated real Electron renderer; synthetic session only.
 const { withoutScripts } = require('./ui-check-page.cjs');
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = path.resolve(__dirname, '..');
 const { fixtureConfigSource } = require('./fixtures/app-defaults.cjs');
 const output = path.join(root, 'outputs/chat-stays-at-end');
-app.setPath('userData', path.join(output, 'runtime'));
-app.whenReady().then(async () => {
+const harness = createHarness({ name: 'chat-stays-at-end', width: 1100, height: 760, userData: path.join(output, 'runtime'), output });
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   const fixture = `
     ${fixtureConfigSource()}
@@ -48,14 +54,14 @@ app.whenReady().then(async () => {
         response.end(await vite.transformIndexHtml('/fixture.html',html));
       });
     }}]});
-  let win;
   try {
     await server.listen(); fs.mkdirSync(output,{recursive:true});
-    win=new BrowserWindow({show:false,width:1100,height:760,webPreferences:{offscreen:true,sandbox:true}});
-    const js=e=>win.webContents.executeJavaScript(e);
-    const pause=ms=>new Promise(r=>setTimeout(r,ms));
-    await win.loadURL(server.resolvedUrls.local[0]+'fixture.html');
-    for(let i=0;i<100&&!(await js('!!window.fixtureReady&&!!document.querySelector("#sessionList [data-id]")'));i++) await pause(100);
+    await harness.window({ webPreferences: { offscreen: true, sandbox: true } });
+    const win = harness.win;
+    const js=e=>harness.js(e);
+    const pause=ms=>harness.pause(ms);
+    await harness.loadUrl(server.resolvedUrls.local[0]+'fixture.html');
+    await harness.until('!!window.fixtureReady&&!!document.querySelector("#sessionList [data-id]")', 10000);
     await js('document.querySelector("#sessionList [data-id]").click()'); await pause(1500);
     const view=()=>js(`(()=>{const p=document.getElementById('chatBody');const last=[...document.querySelectorAll('#timeline .ev-assistant_message')].at(-1).getBoundingClientRect();const box=p.getBoundingClientRect();
       return {gap:Math.round(p.scrollHeight-p.clientHeight-p.scrollTop),lastVisible:last.bottom<=box.bottom+1&&last.top>=box.top-1,top:p.scrollTop,client:p.clientHeight}})()`);
@@ -116,6 +122,7 @@ app.whenReady().then(async () => {
     win.setContentSize(1100,480); await pause(700);
     v=await view(); assert.ok(v.gap<=2 && v.lastVisible, 'and still follows when its area shrinks: '+JSON.stringify(v));
     console.log('PASS: the chat stays at its end when the message box or window shrinks, keeps a scrolled-up reader in place, and is not moved by Agents & automation.');
-  } finally { win?.destroy(); await server.close(); app.quit(); }
+  } finally { await server.close(); }
+  harness.finish();
 // A failed assertion must fail the check: quitting alone exits 0 and reads as a pass.
-}).catch(error => { console.error(error); app.exit(1); });
+}).catch(error => { console.error(error); harness.onError(error); });

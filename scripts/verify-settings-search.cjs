@@ -1,14 +1,20 @@
 // Settings search in real Chromium: the field and its results fit the sidebar, a result opens its
 // page with the setting in view, marked and focused, in both themes. Synthetic state only.
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = path.resolve(__dirname, '..');
 const { fixtureConfigSource } = require('./fixtures/app-defaults.cjs');
 const output = path.join(root, 'outputs/settings-search');
-app.setPath('userData', path.join(output, 'runtime'));
-app.whenReady().then(async () => {
+const harness = createHarness({ name: 'settings-search', width: 1180, height: 760, userData: path.join(output, 'runtime'), output });
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   const fixture = `
     ${fixtureConfigSource()}
@@ -52,18 +58,18 @@ app.whenReady().then(async () => {
         response.end(await vite.transformIndexHtml('/fixture.html',html));
       });
     }}]});
-  let win;
   try {
     await server.listen(); fs.mkdirSync(output,{recursive:true});
-    win=new BrowserWindow({show:false,width:1180,height:760,webPreferences:{offscreen:true,sandbox:true}});
-    const js=e=>win.webContents.executeJavaScript(e);
-    const pause=ms=>new Promise(r=>setTimeout(r,ms));
-    await win.loadURL(server.resolvedUrls.local[0]+'fixture.html');
+    await harness.window({ webPreferences: { offscreen: true, sandbox: true } });
+    const win = harness.win;
+    const js=e=>harness.js(e);
+    const pause=ms=>harness.pause(ms);
+    await harness.loadUrl(server.resolvedUrls.local[0]+'fixture.html');
     const shot=async name=>fs.writeFileSync(path.join(output,name),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
     const type=text=>js(`(()=>{const f=document.getElementById('settingsFind');f.focus();f.value=${JSON.stringify(text)};f.dispatchEvent(new Event('input',{bubbles:true}));return 1})()`);
     for(const theme of ['dark','light']){
-      await win.loadURL(server.resolvedUrls.local[0]+'fixture.html?theme='+theme);
-      for(let i=0;i<100&&!(await js('!!window.fixtureReady&&!!document.querySelector("#sessionList [data-id]")'));i++) await pause(100);
+      await harness.loadUrl(server.resolvedUrls.local[0]+'fixture.html?theme='+theme);
+      await harness.until('!!window.fixtureReady&&!!document.querySelector("#sessionList [data-id]")', 10000);
       await pause(300);
       assert.equal(await js('document.documentElement.dataset.theme'),theme,'The fixture runs in '+theme);
       await js(`document.getElementById('workspaceSettings').click()`); await pause(400);
@@ -96,6 +102,7 @@ app.whenReady().then(async () => {
       assert.equal(await js(`document.getElementById('settingsFindBox').checkVisibility()`),false,'No settings search outside Settings');
     }
     console.log('PASS: settings search finds settings on every page, fits the sidebar, and opens a setting in view, marked and focused.');
-  } finally { win?.destroy(); await server.close(); app.quit(); }
+  } finally { await server.close(); }
+  harness.finish();
 // A failed assertion must fail the check: quitting alone exits 0 and reads as a pass.
-}).catch(error => { console.error(error); app.exit(1); });
+}).catch(error => { console.error(error); harness.onError(error); });

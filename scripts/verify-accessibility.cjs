@@ -2,13 +2,20 @@
 // settings page and the chat screen, both themes, with stateful controls off and on. Our own
 // layout checks only measured the default state, so the Read-only button could ship as an empty
 // pill whenever it was on (#1039). Isolated fixture: no runtime, tunnel, credentials or user data.
-const { app, BrowserWindow, session } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { session } = require('electron');
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = path.resolve(__dirname, '..');
 const output = path.join(root, 'outputs/accessibility');
-app.setPath('userData', path.join(output, 'runtime'));
+const harness = createHarness({ name: 'accessibility', width: 1280, height: 900, userData: path.join(output, 'runtime'), output });
 
 /** Pages as the settings tabs name them; `chat` is the chat screen itself. */
 const PAGES = ['home', 'general', 'usage', 'setup', 'settings', 'appearance', 'activity', 'chat'];
@@ -28,7 +35,7 @@ const KNOWN = [
 /** Controls whose look changes with their state. Each is checked off and on. */
 const STATES = [{ name: 'default', on: [] }, { name: 'toggled', on: ['readOnlyBtn'] }];
 
-app.whenReady().then(async () => {
+harness.ready().then(async () => {
   fs.mkdirSync(output, { recursive: true });
   // Markup and styles only: the app's own scripts are refused at load, so no runtime starts.
   let refusedScripts = 0;
@@ -40,12 +47,12 @@ app.whenReady().then(async () => {
     .replace('<head>', `<head><base href="${pathToFileURL(path.join(root, 'out/renderer/')).href}">`);
   const file = path.join(output, 'fixture.html'); fs.writeFileSync(file, html);
   const axe = fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
-  const win = new BrowserWindow({ show: false, width: 1280, height: 900, webPreferences: { sandbox: true, backgroundThrottling: false } });
+  await harness.window({ webPreferences: { sandbox: true, backgroundThrottling: false } });
   const report = [];
   try {
-    await win.loadFile(file);
+    await harness.loadUrl(pathToFileURL(file).href);
     if (!refusedScripts) throw new Error('The app script was not refused; the fixture would run the real renderer');
-    const js = script => win.webContents.executeJavaScript(script);
+    const js = script => harness.js(script);
     await js(axe);
     for (const theme of ['dark', 'light']) for (const state of STATES) for (const page of PAGES) {
       const result = await js(`(async () => {
@@ -78,7 +85,7 @@ app.whenReady().then(async () => {
       })()`);
       for (const violation of result) report.push({ theme, state: state.name, page, ...violation });
     }
-  } finally { win.destroy(); }
+  } finally { if (!harness.win.isDestroyed()) harness.win.destroy(); }
   fs.writeFileSync(path.join(output, 'violations.json'), JSON.stringify(report, null, 2));
   const unique = new Map();
   for (const item of report) for (const node of item.nodes.filter(node => !KNOWN.some(known => known.id === item.id && known.target === node.target))) {
@@ -88,5 +95,6 @@ app.whenReady().then(async () => {
   }
   for (const item of unique.values()) console.log(`${item.impact.padEnd(8)} ${item.id.padEnd(22)} ${item.target}  — ${item.summary}  [${[...item.where].slice(0, 4).join(', ')}${item.where.size > 4 ? ', …' : ''}]`);
   console.log(unique.size ? `${unique.size} distinct violation(s)` : `Accessibility passed: ${PAGES.length} screens, two themes, controls off and on (${KNOWN.length} known findings listed).`);
-  app.exit(unique.size ? 1 : 0);
-}).catch(error => { console.error(error); app.exit(1); });
+  if (unique.size) harness.app.exit(1);
+  harness.finish();
+}).catch(error => { console.error(error); harness.onError(error); });

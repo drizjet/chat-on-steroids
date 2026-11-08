@@ -10,13 +10,14 @@ if (!process.versions.electron) {
   process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
   process.exit(result.status ?? 1);
 }
-const { app, BrowserWindow } = require('electron');
-app.whenReady().then(async () => {
-  const win = new BrowserWindow({ show: false, width: 1200, height: 800, webPreferences: { offscreen: true } });
+const { createHarness } = require('./lib/ui-harness.cjs');
+const harness = createHarness({ name: 'tool-scroll', width: 1200, height: 800 });
+harness.ready().then(async () => {
+  const win = await harness.window({ webPreferences: { offscreen: true } });
   const css = fs.readFileSync(path.join(__dirname, '../src/renderer/styles.css'), 'utf8');
   const scrollCode = require('esbuild').transformSync(fs.readFileSync(path.join(__dirname, '../src/renderer/timeline-scroll.ts'), 'utf8'), { loader: 'ts', format: 'iife', globalName: 'timelineScroll' }).code;
-  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<style>${css}</style><script>${scrollCode}</script><div id="chatBody" style="height:700px;overflow:auto"><div id="timeline"></div></div>`));
-  const observations = await win.webContents.executeJavaScript(`(async () => {
+  await harness.loadHtml(`<style>${css}</style><script>${scrollCode}</script><div id="chatBody" style="height:700px;overflow:auto"><div id="timeline"></div></div>`);
+  const observations = await harness.js(`(async () => {
     const timeline = document.getElementById('timeline');
     timeline.innerHTML = '<div class="ev"><p class="msg">Before</p></div><details class="tool-group" open><summary>Group</summary><div class="tool-group-body">' + Array.from({length:8}, (_,i) => '<div class="ev ev-tool_call"><div class="ev-body"><details class="tool"><summary>Read ' + i + '</summary><div class="raw"><h4>Result</h4><p class="pre">' + ('LINE ' + i + '\\n').repeat(200) + '</p></div></details></div></div>').join('') + '</div></details><div class="ev"><p class="msg">After</p></div>';
     const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -40,7 +41,7 @@ app.whenReady().then(async () => {
     else assert.equal(result.resultHeight, 0, 'Collapsed tools have no result geometry');
   }
   assert.equal(observations.at(-1).closedGroupHeight, 0, 'Collapsed group removes descendant scroll geometry');
-  const anchor = await win.webContents.executeJavaScript(`(async () => {
+  const anchor = await harness.js(`(async () => {
     const pane = document.getElementById('chatBody'), timeline = document.getElementById('timeline');
     timeline.innerHTML = Array.from({length:20}, (_,i) => '<div data-timeline-key="row-'+i+'" style="height:100px">Message '+i+'</div>').join('');
     pane.scrollTop = 700;
@@ -59,7 +60,7 @@ app.whenReady().then(async () => {
   assert.equal(anchor.after, anchor.before, 'Late text above the viewport must preserve the reader row position');
   assert.equal(anchor.unanchored - anchor.before, 180, 'Absolute scrollTop reproduces the reader jump before restoration');
   assert.equal(anchor.bottomGap, 0, 'Readers already at the bottom continue following new rows');
-  const paging = await win.webContents.executeJavaScript(`(() => {
+  const paging = await harness.js(`(() => {
     const pane = document.getElementById('chatBody'), timeline = document.getElementById('timeline');
     timeline.innerHTML = Array.from({length:160}, (_,i) => '<div data-timeline-key="page-'+i+'" style="height:40px">Message '+i+'</div>').join('');
     pane.scrollTop = pane.scrollHeight;
@@ -75,7 +76,7 @@ app.whenReady().then(async () => {
   // Native wheel routing, including a failed tool and both long compaction sections.
   win.webContents.debugger.attach('1.3');
   for (const kind of ['failed-tool', 'brief-request', 'streaming-summary']) {
-    const point = await win.webContents.executeJavaScript(`(() => {
+    const point = await harness.js(`(() => {
       const pane = document.getElementById('chatBody'), timeline = document.getElementById('timeline');
       const kind = ${JSON.stringify(kind)};
       const text = ('A line of recorded output or handoff text.\\n').repeat(180);
@@ -89,10 +90,10 @@ app.whenReady().then(async () => {
       return {x:Math.round(content.getBoundingClientRect().left+50), y:Math.round(bounds.top+150), before:pane.scrollTop, nested:content.scrollHeight-content.clientHeight};
     })()`);
     assert.equal(point.nested, 0, `${kind} must not have nested vertical overflow`);
-    await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    await harness.js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaY: 180, deltaX: 0 });
-    await new Promise(resolve => setTimeout(resolve, 200));
-    const movement = await win.webContents.executeJavaScript(`(() => {
+    await harness.pause(200);
+    const movement = await harness.js(`(() => {
       const pane=document.getElementById('chatBody'), timeline=document.getElementById('timeline');
       const content=timeline.querySelector('.raw > div');
       const afterWheel=pane.scrollTop;
@@ -107,6 +108,7 @@ app.whenReady().then(async () => {
     assert.equal(movement.inner, 0, `${kind}: inner text must not scroll independently`);
     assert.equal(movement.afterUpdates, movement.afterWheel, `${kind}: updates must preserve the reader position`);
   }
+  if (!win.isDestroyed() && win.webContents.debugger.isAttached()) win.webContents.debugger.detach();
   console.log(`Tool scroll geometry passed: Electron ${process.versions.electron}, 12 disclosure/scroll cycles, collapse, viewport anchoring, bottom following, paging and native wheel routing over failed tools and compaction during updates.`);
-  win.destroy(); app.exit(0);
-}).catch(error => { console.error(error); app.exit(1); });
+  harness.finish();
+}).catch(error => { console.error(error); harness.onError(error); });

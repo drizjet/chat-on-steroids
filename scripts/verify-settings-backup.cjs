@@ -11,9 +11,10 @@ if (!process.versions.electron) {
   const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
   process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || ''); process.exit(result.status ?? 1);
 }
-const { app, BrowserWindow } = require('electron');
-app.whenReady().then(async () => {
-  const root = path.join(__dirname, '..'), output = path.join(root, 'outputs/settings-backup');
+const { createHarness } = require('./lib/ui-harness.cjs');
+const root = path.join(__dirname, '..'), output = path.join(root, 'outputs/settings-backup');
+const harness = createHarness({ name: 'settings-backup', width: 1100, height: 760, output });
+harness.ready().then(async () => {
   fs.mkdirSync(output, { recursive: true });
   const code = (await require('esbuild').build({ stdin: { contents: `
       export { initSettingsBackup } from './src/renderer/settings-backup-dialog.ts';
@@ -29,11 +30,12 @@ app.whenReady().then(async () => {
   const css = linked.map(name => name === 'icons.css' ? icons : fs.readFileSync(path.join(root, 'src/renderer', name), 'utf8')).join('\n');
   const html = withoutScripts(fs.readFileSync(path.join(root, 'src/renderer/index.html'), 'utf8')).replace(/<link\b[^>]*>/g, '')
     .replace('</head>', `<style>${css}</style></head>`);
-  const win = new BrowserWindow({ show: false, width: 1100, height: 760, webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
-  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  await harness.window({ webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
+  const win = harness.win;
+  await harness.loadHtml(html);
   win.webContents.on('console-message', (_e, _l, message) => { if (/error|Error/.test(message)) console.error('renderer:', message); });
-  await win.webContents.executeJavaScript(code);
-  await win.webContents.executeJavaScript(`(()=>{
+  await harness.js(code);
+  await harness.js(`(()=>{
     backup.initLanguage();
     const ok = data => Promise.resolve({ ok: true, data });
     window.fixtureChoice = { token: '6f9619ff-8b86-4d01-b42d-00cf4fc964ff', file: 'chat-on-steroids-settings-2026-10-23.json', appVersion: '2.1.46',
@@ -80,17 +82,17 @@ app.whenReady().then(async () => {
   for (const language of languages) {
     for (const [width, height, zoom] of language === 'en' || language === 'de' || language === 'ru' ? [[1100, 760, 1], [720, 600, 1], [1100, 760, 1.5]] : [[1100, 760, 1]]) {
       win.setContentSize(width, height); win.webContents.setZoomFactor(zoom);
-      await new Promise(r => setTimeout(r, 120));
+      await harness.pause(120);
       const tag = `${language}-${width}${zoom === 1 ? '' : '-zoom'}`;
-      await win.webContents.executeJavaScript(`backup.setLanguage(${JSON.stringify(language)}); document.querySelectorAll('dialog[open]').forEach(d => d.close()); true`);
-      const settings = await win.webContents.executeJavaScript(rows);
+      await harness.js(`backup.setLanguage(${JSON.stringify(language)}); document.querySelectorAll('dialog[open]').forEach(d => d.close()); true`);
+      const settings = await harness.js(rows);
       assert.deepEqual(settings.cut, [], 'Backup rows: nothing cut ' + tag);
       assert.ok(settings.buttonsOneLine && settings.sameRight, 'Backup rows: buttons on one line, one right edge ' + tag + JSON.stringify(settings));
       if (zoom === 1 && width === 1100) fs.writeFileSync(path.join(output, `rows-${language}.png`), (await win.webContents.capturePage(settings.box)).toPNG());
       // Export, with the keys and passphrase fields open (its tallest state).
-      await win.webContents.executeJavaScript(`(()=>{ document.getElementById('exportSettings').click(); const k = document.getElementById('exportSettingsKeys'); k.checked = true; k.dispatchEvent(new Event('change')); return true; })()`);
-      await new Promise(r => setTimeout(r, 80));
-      const exp = await win.webContents.executeJavaScript(measureDialog('exportSettingsDialog'));
+      await harness.js(`(()=>{ document.getElementById('exportSettings').click(); const k = document.getElementById('exportSettingsKeys'); k.checked = true; k.dispatchEvent(new Event('change')); return true; })()`);
+      await harness.pause(80);
+      const exp = await harness.js(measureDialog('exportSettingsDialog'));
       results.push({ tag, dialog: 'export', ...exp });
       assert.ok(exp.inside, 'export dialog inside the window ' + tag);
       assert.equal(exp.lefts.length, 1, 'export: one left edge ' + tag + JSON.stringify(exp.lefts));
@@ -98,17 +100,17 @@ app.whenReady().then(async () => {
       assert.deepEqual(exp.cut, [], 'export: nothing cut ' + tag);
       assert.ok(exp.oneRow && !exp.wrapped.length, 'export: buttons on one row ' + tag);
       // Every quiet line (a switch's description, a field's hint) has one colour and size.
-      const quiet = await win.webContents.executeJavaScript(`[...new Set([...document.querySelectorAll('#exportSettingsDialog small, #exportSettingsDialog .setting-text em')]
+      const quiet = await harness.js(`[...new Set([...document.querySelectorAll('#exportSettingsDialog small, #exportSettingsDialog .setting-text em')]
         .filter(n => n.offsetParent).map(n => { const c = getComputedStyle(n); return c.color + ' ' + c.fontSize + ' ' + c.fontWeight; }))]`);
       assert.equal(quiet.length, 1, 'export: hints look alike ' + tag + JSON.stringify(quiet));
       if (zoom === 1 && width === 1100 && (language === 'en' || language === 'de' || language === 'ja')) fs.writeFileSync(path.join(output, `export-${language}.png`), (await win.webContents.capturePage(exp.box)).toPNG());
-      await win.webContents.executeJavaScript(`document.getElementById('exportSettingsDialog').close(); true`);
+      await harness.js(`document.getElementById('exportSettingsDialog').close(); true`);
       // Import in its tallest state: the access warning, Review changes open, saved keys ticked with the passphrase field.
-      await win.webContents.executeJavaScript(`document.getElementById('importSettings').click(); true`);
-      await new Promise(r => setTimeout(r, 120));
-      await win.webContents.executeJavaScript(`(()=>{ document.getElementById('importSettingsReview').open = true; const k = document.getElementById('importSettingsKeys'); k.checked = true; k.dispatchEvent(new Event('change')); return true; })()`);
-      await new Promise(r => setTimeout(r, 80));
-      const imp = await win.webContents.executeJavaScript(measureDialog('importSettingsDialog'));
+      await harness.js(`document.getElementById('importSettings').click(); true`);
+      await harness.pause(120);
+      await harness.js(`(()=>{ document.getElementById('importSettingsReview').open = true; const k = document.getElementById('importSettingsKeys'); k.checked = true; k.dispatchEvent(new Event('change')); return true; })()`);
+      await harness.pause(80);
+      const imp = await harness.js(measureDialog('importSettingsDialog'));
       results.push({ tag, dialog: 'import', ...imp });
       assert.ok(imp.inside, 'import dialog inside the window ' + tag);
       assert.equal(imp.lefts.length, 1, 'import: one left edge ' + tag + JSON.stringify(imp.lefts));
@@ -116,22 +118,22 @@ app.whenReady().then(async () => {
       assert.deepEqual(imp.cut, [], 'import: nothing cut ' + tag);
       assert.ok(imp.oneRow && !imp.wrapped.length, 'import: buttons on one row ' + tag);
       if (zoom === 1 && width === 1100 && (language === 'en' || language === 'de' || language === 'ja')) fs.writeFileSync(path.join(output, `import-${language}.png`), (await win.webContents.capturePage(imp.box)).toPNG());
-      await win.webContents.executeJavaScript(`document.getElementById('importSettingsDialog').close(); true`);
+      await harness.js(`document.getElementById('importSettingsDialog').close(); true`);
     }
   }
   win.setContentSize(1100, 760); win.webContents.setZoomFactor(1);
   fs.writeFileSync(path.join(output, 'measurements.json'), JSON.stringify(results, null, 2));
   // A short passphrase typed, then saved keys turned off: Export must still go. Typed for real, since
   // only a value the person edited counts as too short for the browser's own form check.
-  await win.webContents.executeJavaScript(`backup.setLanguage('en'); document.querySelectorAll('dialog[open]').forEach(d => d.close());
+  await harness.js(`backup.setLanguage('en'); document.querySelectorAll('dialog[open]').forEach(d => d.close());
     document.getElementById('exportSettings').click(); const k = document.getElementById('exportSettingsKeys'); k.checked = true; k.dispatchEvent(new Event('change'));
     document.getElementById('exportSettingsPass').focus(); true`);
   await win.webContents.insertText('short');
-  const typedValid = await win.webContents.executeJavaScript(`document.getElementById('exportSettingsPass').validity.valid`);
-  await win.webContents.executeJavaScript(`(() => { const k = document.getElementById('exportSettingsKeys'); k.checked = false; k.dispatchEvent(new Event('change')); return true; })()`);
-  const formValid = await win.webContents.executeJavaScript(`document.getElementById('exportSettingsForm').checkValidity()`);
+  const typedValid = await harness.js(`document.getElementById('exportSettingsPass').validity.valid`);
+  await harness.js(`(() => { const k = document.getElementById('exportSettingsKeys'); k.checked = false; k.dispatchEvent(new Event('change')); return true; })()`);
+  const formValid = await harness.js(`document.getElementById('exportSettingsForm').checkValidity()`);
   assert.ok(formValid, 'export goes once saved keys are off, whatever the hidden passphrase says' + JSON.stringify({ typedValid }));
-  await win.webContents.executeJavaScript(`document.getElementById('exportSettingsDialog').close(); true`);
+  await harness.js(`document.getElementById('exportSettingsDialog').close(); true`);
   console.log('Passed: the Backup rows and the Export and Import dialogs fit, share one edge and cut nothing in all 13 languages (English, German and Russian also narrow and zoomed).');
-  win.destroy(); app.exit(0);
-}).catch(error => { console.error(error); app.exit(1); });
+  harness.finish();
+}).catch(error => { console.error(error); harness.onError(error); });

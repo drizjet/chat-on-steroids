@@ -1,17 +1,23 @@
 // Real Chromium layout for the setup guide, using the production modules and styles.
 // Serves a UI-only fixture; no app backend, credentials, browser pairing or tunnel is started.
 const { withoutScripts } = require('./ui-check-page.cjs');
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const LANGUAGES = 1 + require('node:fs').readdirSync(path.join(__dirname, '../src/renderer/locales')).filter(name => name.endsWith('.json')).length;
 const assert = require('node:assert/strict');
-app.setPath('userData', path.resolve(__dirname, '../outputs/setup-guide-runtime'));
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
+const root = path.resolve(__dirname, '..');
+const output = path.join(root, 'outputs/setup-guide');
+const harness = createHarness({ name: 'setup-guide', width: 1100, height: 900, userData: path.resolve(__dirname, '../outputs/setup-guide-runtime'), output });
 
-app.whenReady().then(async () => {
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
-  const root = path.resolve(__dirname, '..');
-  const output = path.join(root, 'outputs/setup-guide');
   fs.mkdirSync(output, { recursive: true });
   // Pixel data and transparency are sufficient for these PNGs; reject embedded metadata.
   for (const name of fs.readdirSync(path.join(root, 'src/renderer/setup-images'))) {
@@ -44,13 +50,12 @@ app.whenReady().then(async () => {
         response.end(await vite.transformIndexHtml('/setup-preview.html', source));
       });
     } }] });
-  let win;
   try {
     await server.listen();
-    win = new BrowserWindow({ show: false, width: 1100, height: 900,
-      webPreferences: { sandbox: true, backgroundThrottling: false } });
-    await win.loadURL(server.resolvedUrls.local[0] + 'setup-preview.html');
-    const ready = await win.webContents.executeJavaScript('window.fixtureReady');
+    await harness.window({ webPreferences: { sandbox: true, backgroundThrottling: false, offscreen: false } });
+    const win = harness.win;
+    await harness.loadUrl(server.resolvedUrls.local[0] + 'setup-preview.html');
+    const ready = await harness.js('window.fixtureReady');
     assert.equal(ready, true);
     const results = [];
     for (const [width, height, zoom, language, theme] of [
@@ -66,9 +71,9 @@ app.whenReady().then(async () => {
     ]) {
       win.setSize(width, height);
       win.webContents.setZoomFactor(zoom);
-      await win.webContents.executeJavaScript(`window.setLanguage('${language}')`);
-      await win.webContents.executeJavaScript(`document.documentElement.dataset.theme = '${theme}'`);
-      const header = await win.webContents.executeJavaScript(`(async () => {
+      await harness.js(`window.setLanguage('${language}')`);
+      await harness.js(`document.documentElement.dataset.theme = '${theme}'`);
+      const header = await harness.js(`(async () => {
         const panel = document.querySelector('[data-panel="setup"]'); panel.scrollTop = 0;
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const tabs = panel.querySelector('.language-tabs'), title = panel.querySelector('.setup-heading h1');
@@ -92,9 +97,9 @@ app.whenReady().then(async () => {
       assert.deepEqual(header, { overflow:false, separated:true, compact:true, flagsOnly:true, labeled:true, selected:[language], reachable:true }, JSON.stringify({width, zoom, language, header}));
       results.push({ kind:'header', width, zoom, language, theme, ...header });
       // Let the offscreen compositor publish the scrolled header before capturing it.
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await harness.pause(100);
       fs.writeFileSync(path.join(output, `${language}-${width}-${zoom}-header.png`), (await win.webContents.capturePage()).toPNG());
-      const emptyFields = await win.webContents.executeJavaScript(`(() => {
+      const emptyFields = await harness.js(`(() => {
         return [...document.querySelectorAll('.setup-required')].every(input => {
           const empty = getComputedStyle(input).backgroundColor;
           input.classList.remove('is-empty');
@@ -105,14 +110,14 @@ app.whenReady().then(async () => {
       })()`);
       assert.equal(emptyFields, true, 'Empty required fields must have a distinct tint');
       // Each step's pictures sit in a carousel inside that step; only the open step is on screen.
-      const groups = await win.webContents.executeJavaScript(`[...document.querySelectorAll('[data-setup-guide]')]
+      const groups = await harness.js(`[...document.querySelectorAll('[data-setup-guide]')]
         .map(host => [host.dataset.setupGuide, host.querySelectorAll('.guide-frame').length]).filter(([, count]) => count > 0)`);
       // Sign-in (two browsers), tunnel, API key and plugin; ChatGPT's Developer mode switch is gone.
       assert.ok(groups.length >= 5, 'Setup has its picture guides: ' + JSON.stringify(groups));
       for (const [group, count] of groups) {
         for (let index = 0; index < count; index++) {
           const selector = `[data-setup-guide="${group}"]`;
-          const measured = await win.webContents.executeJavaScript(`(async () => {
+          const measured = await harness.js(`(async () => {
             const host = document.querySelector('${selector}');
             const step = host.closest('.step');
             for (const other of document.querySelectorAll('.wizard > .step')) other.classList.toggle('is-open', other === step);
@@ -137,23 +142,23 @@ app.whenReady().then(async () => {
           assert.deepEqual(measured, { imageLoaded: true, overflow: false, shown: true, labelled: true, spotsFit: true }, JSON.stringify({ group, index, width, zoom, measured }));
           results.push({ group, index, width, zoom, language, theme, ...measured });
           // Image decoding/layout can finish before the offscreen compositor publishes its tile.
-          await new Promise(resolve => setTimeout(resolve, 100));
+          await harness.pause(100);
           fs.writeFileSync(path.join(output, `${language}-${width}-${zoom}-${group}-${index}.png`), (await win.webContents.capturePage()).toPNG());
         }
       }
     }
     // Use Chromium's native button activation, then reload to check the new locale.
-    await win.webContents.executeJavaScript(`document.querySelector('[data-language="en"]').focus()`);
+    await harness.js(`document.querySelector('[data-language="en"]').focus()`);
     const key = async keyCode => {
       win.webContents.sendInputEvent({type:'keyDown', keyCode});
       if (keyCode === 'Enter') win.webContents.sendInputEvent({type:'char', keyCode:'\r'});
       win.webContents.sendInputEvent({type:'keyUp', keyCode});
-      await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+      await harness.js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     };
     // Each step moves focus to another flag and activates it natively (Enter or Space); the page must
     // switch to exactly the focused language. Derived from the live focus, not a fixed flag order.
-    const focused = () => win.webContents.executeJavaScript('document.activeElement.dataset.language');
-    const lang = () => win.webContents.executeJavaScript('document.documentElement.lang');
+    const focused = () => harness.js('document.activeElement.dataset.language');
+    const lang = () => harness.js('document.documentElement.lang');
     const visited = new Set(['en']);
     let last = 'en';
     for (const [tabs, activation] of [[1, 'Enter'], [2, 'Space'], [1, 'Space'], [1, 'Space']]) {
@@ -165,26 +170,26 @@ app.whenReady().then(async () => {
       visited.add(target); last = target;
     }
     assert.ok(visited.size >= 4, 'Keyboard reached several languages: ' + [...visited].join(','));
-    await win.loadURL(server.resolvedUrls.local[0] + 'setup-preview.html');
-    assert.deepEqual(await win.webContents.executeJavaScript(`({language:document.documentElement.lang,
+    await harness.loadUrl(server.resolvedUrls.local[0] + 'setup-preview.html');
+    assert.deepEqual(await harness.js(`({language:document.documentElement.lang,
       selected:document.querySelector('[data-language="${last}"]').getAttribute('aria-pressed'),
       preference:document.getElementById('uiLanguage').value})`), {language:last, selected:'true', preference:last});
     // Native modal, Escape dismissal and focus restoration must work without opening a browser.
-    await win.webContents.executeJavaScript(`(() => {
+    await harness.js(`(() => {
       const host=document.querySelector('[data-setup-guide="plugin"]');
       for (const step of document.querySelectorAll('.wizard > .step')) step.classList.toggle('is-open', step === host.closest('.step'));
       host.querySelectorAll('.guide-dot')[1].click();
       const button=host.querySelectorAll('.guide-frame')[1];
       button.focus(); button.click();
     })()`);
-    assert.equal(await win.webContents.executeJavaScript('document.querySelector(".setup-image-dialog").open'), true);
+    assert.equal(await harness.js('document.querySelector(".setup-image-dialog").open'), true);
     fs.writeFileSync(path.join(output, 'enlarged.png'), (await win.webContents.capturePage()).toPNG());
     win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'ESCAPE' });
     win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'ESCAPE' });
-    await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-    assert.equal(await win.webContents.executeJavaScript('document.querySelector(".setup-image-dialog").open'), false);
-    assert.equal(await win.webContents.executeJavaScript('document.activeElement.getAttribute("aria-label")'), await win.webContents.executeJavaScript('window.t("Enlarge image")'));
-    const details = await win.webContents.executeJavaScript(`(() => {
+    await harness.js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    assert.equal(await harness.js('document.querySelector(".setup-image-dialog").open'), false);
+    assert.equal(await harness.js('document.activeElement.getAttribute("aria-label")'), await harness.js('window.t("Enlarge image")'));
+    const details = await harness.js(`(() => {
       const d=document.getElementById('desktopTunnelField'); const initial=d.open;
       d.querySelector('summary').click(); return { initial, opened:d.open };
     })()`);
@@ -192,8 +197,7 @@ app.whenReady().then(async () => {
     fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify(results, null, 2));
     console.log(`PASS: ${results.length} setup/header layouts; native language keyboard controls and persistence; modal/Escape/focus and optional disclosure.`);
   } finally {
-    win?.destroy();
     await server.close();
   }
-  app.exit(0);
-}).catch(error => { console.error(error); app.exit(1); });
+  harness.finish();
+}).catch(error => { console.error(error); harness.onError(error); });

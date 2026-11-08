@@ -1,10 +1,19 @@
 // Isolated Electron fixture: production countdown renderer, dock markup and CSS.
 const { withoutScripts } = require('./ui-check-page.cjs');
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const { build } = require('esbuild');
+const root = path.join(__dirname, '..');
+const output = path.join(root, 'outputs/recovery-layout');
+const harness = createHarness({ name: 'recovery-layout', width: 920, height: 380, output });
 
 async function captureOffscreenFrame(win, file) {
   // This fixture is an offscreen window. Capture the frame from the offscreen renderer's own
@@ -16,19 +25,16 @@ async function captureOffscreenFrame(win, file) {
   fs.writeFileSync(file, (await frame).toPNG());
 }
 
-app.whenReady().then(async () => {
-  const root = path.join(__dirname, '..');
-  const output = path.join(root, 'outputs/recovery-layout');
+harness.ready().then(async () => {
   fs.mkdirSync(output, { recursive: true });
   const bundle = await build({ entryPoints: [path.join(root, 'src/renderer/recovery.ts')], bundle: true,
     write: false, format: 'iife', globalName: 'recovery', platform: 'browser' });
-  const win = new BrowserWindow({ show: false, width: 920, height: 380,
-    webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
+  const win = await harness.window({ webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
   const css = fs.readFileSync(path.join(root, 'src/renderer/styles.css'), 'utf8');
   const html = withoutScripts(fs.readFileSync(path.join(root, 'src/renderer/index.html'), 'utf8')).replace(/<link\b[^>]*>/gi, '');
-  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html.replace('</head>', `<style>${css}</style></head>`)));
-  await win.webContents.executeJavaScript(bundle.outputFiles[0].text);
-  await win.webContents.executeJavaScript(`(() => {
+  await harness.loadHtml(html.replace('</head>', `<style>${css}</style></head>`));
+  await harness.js(bundle.outputFiles[0].text);
+  await harness.js(`(() => {
     const dock = document.getElementById('composerDock');
     const composer = document.querySelector('form.composer');
     const sprite = document.querySelector('svg');
@@ -47,7 +53,7 @@ app.whenReady().then(async () => {
     win.webContents.setZoomFactor(zoom);
     for (const kind of ['thinking-failed', 'unattributed', 'unattributed-wait', 'assistant-error', 'tab-recovery', 'native-busy', 'silence', 'post-reload'])
       for (const next of kind === 'post-reload' ? [null, 'queue', 'goal', 'loop', 'continue'] : kind === 'native-busy' ? [null, 'continue'] : [null]) {
-      const measured = await win.webContents.executeJavaScript(`(async () => {
+      const measured = await harness.js(`(async () => {
         document.documentElement.dataset.theme = '${theme}';
         recovery.renderRecoveryCountdowns(document.getElementById('recoveryStatus'), [{ kind: '${kind}', next: ${JSON.stringify(next)}, generating: ${kind === 'post-reload'}, deadline: ${kind === 'unattributed' ? 15000 : 300000} }], 1000);
         // Measure the resting layout: the dock's entrance animation would otherwise be caught mid-way.
@@ -62,7 +68,7 @@ app.whenReady().then(async () => {
       assert.ok(measured.height >= 38 && measured.timerWidth > 0, JSON.stringify({ width, zoom, theme, kind, next, ...measured }));
       results.push({ width, zoom, theme, kind, next, ...measured });
       if (width === 920 && zoom === 1 && theme === 'dark') {
-        await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+        await harness.js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
         await captureOffscreenFrame(win, path.join(output, `${kind}${next ? '-' + next : ''}.png`));
       }
     }
@@ -90,7 +96,7 @@ app.whenReady().then(async () => {
     { file: 'preview-loop-thinking-failed', kind: 'thinking-failed', next: 'loop', deadline: 300_000, now: 0 }
   ];
   for (const preview of previews) {
-    await win.webContents.executeJavaScript(`(() => {
+    await harness.js(`(() => {
       const sample = ${JSON.stringify(preview)};
       document.documentElement.dataset.theme = 'dark';
       document.body.style.paddingTop = '30px';
@@ -111,5 +117,5 @@ app.whenReady().then(async () => {
   }
   fs.writeFileSync(path.join(output, 'measurements.json'), JSON.stringify(results, null, 2));
   console.log(`Passed ${results.length} recovery layout cases. Screenshots: ${output}`);
-  win.destroy(); app.quit();
-}).catch(error => { console.error(error); app.exit(1); });
+  harness.finish();
+}).catch(error => { console.error(error); harness.onError(error); });

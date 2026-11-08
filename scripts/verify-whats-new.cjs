@@ -1,16 +1,22 @@
 // What's New in real Chromium (#1172): once after an update, centred, every icon centred in its badge,
 // both themes, a narrow window, dismissal by button and Escape; nothing on the same version or on a
 // version without highlights. Synthetic state only.
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = path.resolve(__dirname, '..');
 const { fixtureConfigSource } = require('./fixtures/app-defaults.cjs');
 const { inkInsets: sharedInkInsets } = require('./fixtures/ink.cjs');
 const output = path.join(root, 'outputs/whats-new');
-app.setPath('userData', path.join(output, 'runtime'));
-app.whenReady().then(async () => {
+const harness = createHarness({ name: 'whats-new', width: 1180, height: 760, userData: path.join(output, 'runtime'), output });
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   const fixture = `
     ${fixtureConfigSource()}
@@ -54,15 +60,15 @@ app.whenReady().then(async () => {
         response.end(await vite.transformIndexHtml('/fixture.html',html));
       });
     }}]});
-  let win;
   try {
     await server.listen(); fs.mkdirSync(output,{recursive:true});
-    win=new BrowserWindow({show:false,width:1180,height:760,webPreferences:{offscreen:true,sandbox:true}});
-    const js=e=>win.webContents.executeJavaScript(e);
-    const pause=ms=>new Promise(r=>setTimeout(r,ms));
+    await harness.window({ webPreferences: { offscreen: true, sandbox: true } });
+    const win = harness.win;
+    const js=e=>harness.js(e);
+    const pause=ms=>harness.pause(ms);
     const until=async(expression,ms=6000)=>{const end=Date.now()+ms;while(Date.now()<end){if(await js(expression))return;await pause(40);}throw new Error('Timeout: '+expression);};
     const open=async query=>{
-      await win.loadURL(server.resolvedUrls.local[0]+'fixture.html?'+query);
+      await harness.loadUrl(server.resolvedUrls.local[0]+'fixture.html?'+query);
       await until('window.fixtureReady===true');
     };
     const shot=async name=>fs.writeFileSync(path.join(output,name),(await win.webContents.capturePage()).toPNG());
@@ -159,6 +165,7 @@ app.whenReady().then(async () => {
 
     console.log('PASS: What\'s New opens once after an update, centred with centred icons in both themes, opens the exact release notes, closes by button and Escape, fits a short window, and stays away on the same version or one without highlights');
   } finally {
-    win?.destroy(); await server.close(); app.quit();
+    await server.close();
   }
-}).catch(error => { console.error(error); app.exit(1); });
+  harness.finish();
+}).catch(error => { console.error(error); harness.onError(error); });

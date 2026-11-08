@@ -1,25 +1,30 @@
 // Real Chromium acceptance of the current renderer source through Vite. Backend responses are
 // synthetic, and the isolated window never opens a provider, tunnel or the user's app state.
 const { withoutScripts } = require('./ui-check-page.cjs');
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = path.resolve(__dirname, '..');
 const { fixtureConfigSource, BENIGN_RENDERER_ERRORS } = require('./fixtures/app-defaults.cjs');
 const output = path.join(root, 'outputs/pr-workspace');
-app.setPath('userData', path.join(output, 'runtime'));
 fs.mkdirSync(output, { recursive: true });
+const harness = createHarness({ name: 'pr-workspace', width: 1500, height: 1000, userData: path.join(output, 'runtime'), output });
 
-app.whenReady().then(async () => {
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
-  let win;
   let server;
   const results = [];
   try {
-    win = new BrowserWindow({ show: false, width: 1500, height: 1000,
-      webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } });
-    await win.loadURL('data:text/html,' + encodeURIComponent('<h1>Project preview</h1><p>Local synthetic PDF fixture.</p>'));
+    await harness.window({ webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false, offscreen: false } });
+    const win = harness.win;
+    await harness.loadHtml('<h1>Project preview</h1><p>Local synthetic PDF fixture.</p>');
     const pdf = await win.webContents.printToPDF({ pageSize: 'A5' });
     const fixture = `
       localStorage.clear();
@@ -121,16 +126,16 @@ app.whenReady().then(async () => {
     };
     const until = async expression => {
       const deadline = Date.now() + 12_000;
-      while (Date.now() < deadline) { if (await js(expression)) return; await new Promise(resolve => setTimeout(resolve, 30)); }
+      while (Date.now() < deadline) { if (await js(expression)) return; await harness.pause(30); }
       throw new Error('Renderer condition timed out: ' + expression + ' ' + JSON.stringify(await js('window.fixtureErrors')));
     };
     const screenshot = async name => {
       await js('document.getAnimations().forEach(animation => { if (animation.effect.getTiming().iterations !== Infinity) animation.finish(); })');
       await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
-      await new Promise(resolve => setTimeout(resolve, 120));
+      await harness.pause(120);
       fs.writeFileSync(path.join(output, name + '.png'), (await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG());
     };
-    await win.loadURL(server.resolvedUrls.local[0] + 'fixture.html');
+    await harness.loadUrl(server.resolvedUrls.local[0] + 'fixture.html');
     await until('window.fixtureReady && document.querySelectorAll(".sess[data-id]").length===3');
     assert.ok(await js(`(()=>{const button=document.getElementById('chatRefresh');const heading=button.closest('.sidebar-session-heading');const a=button.getBoundingClientRect(),b=heading.getBoundingClientRect();return button.children.length===1&&Math.abs((a.top+a.bottom-b.top-b.bottom)/2)<1})()`));
     assert.equal(await js('document.querySelectorAll("#projectList .sess[data-id]").length'),2);
@@ -353,10 +358,10 @@ app.whenReady().then(async () => {
     const setup=await js(`(()=>{const h=document.querySelector('.setup-heading'),t=h.querySelector('h1').getBoundingClientRect(),f=h.querySelector('.language-tabs').getBoundingClientRect();return {overlap:!(f.left>=t.right||f.top>=t.bottom),titleClipped:h.querySelector('h1').scrollWidth>h.querySelector('h1').clientWidth+1,flagsInside:f.right<=h.getBoundingClientRect().right+1}})()`);
     assert.deepEqual(setup,{overlap:false,titleClipped:false,flagsInside:true}); await screenshot('setup-spanish-aligned');
     // A laptop-sized window: the twelve flags no longer fit beside the title and must move below it.
-    win.setSize(1100,800); await new Promise(resolve=>setTimeout(resolve,300));
+    win.setSize(1100,800); await harness.pause(300);
     const narrowSetup=await js(`(()=>{const h=document.querySelector('.setup-heading'),t=h.querySelector('h1').getBoundingClientRect(),f=h.querySelector('.language-tabs').getBoundingClientRect();return {overlap:!(f.left>=t.right||f.top>=t.bottom),titleClipped:h.querySelector('h1').scrollWidth>h.querySelector('h1').clientWidth+1,flagsInside:f.right<=h.getBoundingClientRect().right+1}})()`);
     assert.deepEqual(narrowSetup,{overlap:false,titleClipped:false,flagsInside:true}); await screenshot('setup-spanish-laptop');
-    win.setSize(1500,1000); await new Promise(resolve=>setTimeout(resolve,300));
+    win.setSize(1500,1000); await harness.pause(300);
     await js(`document.getElementById('backToChat').click();const input=document.getElementById('chatInput');input.value='/';input.setSelectionRange(1,1);input.dispatchEvent(new Event('input',{bubbles:true}));`);
     await until('!document.getElementById("skillPicker").hidden && document.querySelector(".skill-choice")');
     // The Skills library has its own sidebar entry since 2026-09-27; slash commands still work beside it.
@@ -373,6 +378,6 @@ app.whenReady().then(async () => {
     assert.deepEqual(errors,[]);
     fs.writeFileSync(path.join(output,'results.json'),JSON.stringify({renderer:'current source in Chromium; synthetic backend',results,save:true,draftRoundTrip:true,gitChanges:true,pdf:true,connection:bounds,skillsDraftRoundTrip:true,sharedLibrary:true,sidebar:true,composer,agentMonitor:{latestActivity:true,actionCount:true},errors},null,2));
     console.log('PASS: current renderer Files layouts, Agent Monitor activity/count, read-only Git Changes/diff, real editor draft navigation, PDF rendering, connection status, Skills chips/shared library, Projects/Chats, Spanish and Traditional Chinese. '+output);
-  } finally { win?.destroy(); await server?.close(); }
-  app.exit(0);
-}).catch(error=>{console.error(error);app.exit(1)});
+  } finally { await server?.close(); }
+  harness.finish();
+}).catch(error=>{console.error(error);harness.onError(error)});

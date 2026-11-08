@@ -3,13 +3,19 @@
 // happened and the saved diagnostics report; there is no idea form, only a link that sends new
 // features to pull requests (2026-11-01); a newer release is pointed out; the done step names the file to attach. The dialog and Activity's header (which
 // gained the button) fit in every language, both themes and a narrow window.
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
 const root = process.env.COS_UI_ROOT || path.resolve(__dirname, '..');
 const output = path.resolve(process.env.COS_UI_OUTPUT || path.join(root, '.tmp', 'feedback-dialog'));
 const { fixtureConfigSource, BENIGN_RENDERER_ERRORS } = require(path.join(root, 'scripts/fixtures/app-defaults.cjs'));
-app.setPath('userData', path.join(output, 'profile')); app.disableHardwareAcceleration();
-const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
+const harness = createHarness({ name: 'feedback-dialog', width: 1280, height: 800, userData: path.join(output, 'profile'), output, ignoreErrors: BENIGN_RENDERER_ERRORS });
+harness.app.disableHardwareAcceleration();
 const LANGUAGES = ['en', 'de', 'es', 'fr', 'ja', 'ko', 'pt-BR', 'pt-PT', 'ru', 'tr', 'vi', 'zh-CN', 'zh-TW'];
 const fixture = `(() => {
  const old=window.api,f=composerFixture,ok=data=>Promise.resolve({ok:true,data:structuredClone(data)});
@@ -25,8 +31,8 @@ const fixture = `(() => {
  };
  window.api=new Proxy(methods,{get:(target,key)=>key in target?target[key]:old[key]});
 })();`;
-let server, win;
-app.whenReady().then(async () => {
+let server;
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   const icons = path.join(root, 'node_modules/@phosphor-icons/web/src');
   server = await createServer({ configFile:false, root:path.join(root,'src/renderer'), cacheDir:path.join(output,'vite'), logLevel:'error',
@@ -37,18 +43,19 @@ app.whenReady().then(async () => {
       configureServer(vite){vite.middlewares.use((req,res,next)=>{if(req.url!=='/timeline-fixture.js')return next();res.setHeader('Content-Type','text/javascript');
         res.end(fixtureConfigSource()+fs.readFileSync(path.join(root,'scripts/fixtures/composer-ui.js'),'utf8')+fixture);});}}]});
   await server.listen();
-  win = new BrowserWindow({show:false,width:1280,height:800,webPreferences:{sandbox:true,offscreen:true,backgroundThrottling:false}});
+  await harness.window({ webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
+  const win = harness.win;
   const errors=[];
   win.webContents.on('console-message',e=>{if(e.level==='error'&&!BENIGN_RENDERER_ERRORS.includes(e.message))errors.push(e.message);});
-  const js=code=>win.webContents.executeJavaScript(code);
-  const until=async expression=>{for(const deadline=Date.now()+15000;Date.now()<deadline;){if(await js(expression))return;await pause(40);}throw new Error('Timed out: '+expression);};
-  const settle=async()=>{await js(`document.getAnimations().forEach(a=>{if(a.effect.getTiming().iterations!==Infinity)a.finish()})`);await pause(250);};
+  const js=code=>harness.js(code);
+  const until=async expression=>{for(const deadline=Date.now()+15000;Date.now()<deadline;){if(await js(expression))return;await harness.pause(40);}throw new Error('Timed out: '+expression);};
+  const settle=async()=>{await js(`document.getAnimations().forEach(a=>{if(a.effect.getTiming().iterations!==Infinity)a.finish()})`);await harness.pause(250);};
   const capture=async name=>{await settle();fs.mkdirSync(output,{recursive:true});fs.writeFileSync(path.join(output,name),(await win.webContents.capturePage()).toPNG());};
   const dialog=`document.getElementById('feedbackDialog')`;
   const load=async language=>{
-    await win.loadURL(server.resolvedUrls.local[0]);
+    await harness.loadUrl(server.resolvedUrls.local[0]);
     await js(`localStorage.setItem('cos.ui.language',${JSON.stringify(language)})`);
-    await win.loadURL(server.resolvedUrls.local[0]);
+    await harness.loadUrl(server.resolvedUrls.local[0]);
     await until(`!!document.getElementById('workspaceSettings')&&!!window.api`);
   };
   const openActivity=async()=>{
@@ -162,7 +169,7 @@ app.whenReady().then(async () => {
     await js(`document.getElementById('feedbackCancel').click()`);
     await until(`!${dialog}.open`);
   }
-  win.setContentSize(720, 640); await pause(300);
+  win.setContentSize(720, 640); await harness.pause(300);
   for (const language of ['en','de','ru','pt-BR','vi']) {
     await load(language);
     await open();
@@ -173,5 +180,12 @@ app.whenReady().then(async () => {
   assert.deepEqual(errors,[]);
   console.log('PASS: send feedback from Activity and /feedback; problem needs text and report, no idea form; update notice; done step; 13 languages, both themes, 720 px');
   // The dev server can keep a socket open after the window is gone; the check must still end.
-  win.destroy();await Promise.race([server.close(),new Promise(resolve=>setTimeout(resolve,2000))]);app.exit(0);
-}).catch(async error=>{fs.mkdirSync(output,{recursive:true});if(win&&!win.isDestroyed())fs.writeFileSync(path.join(output,'failure.png'),(await win.webContents.capturePage()).toPNG());console.error(error);await Promise.race([server?.close(),new Promise(resolve=>setTimeout(resolve,2000))]);app.exit(1);});
+  await Promise.race([server.close(),new Promise(resolve=>setTimeout(resolve,2000))]);
+  harness.finish();
+}).catch(async error=>{
+  fs.mkdirSync(output,{recursive:true});
+  if(harness.win&&!harness.win.isDestroyed()){try{fs.writeFileSync(path.join(output,'failure.png'),(await harness.win.webContents.capturePage()).toPNG());}catch{}}
+  console.error(error);
+  await Promise.race([server?.close(),new Promise(resolve=>setTimeout(resolve,2000))]);
+  harness.onError(error);
+});

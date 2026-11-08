@@ -11,9 +11,10 @@ if (!process.versions.electron) {
   const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
   process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || ''); process.exit(result.status ?? 1);
 }
-const { app, BrowserWindow } = require('electron');
-app.whenReady().then(async () => {
-  const root = path.join(__dirname, '..'), output = path.join(root, 'outputs/phone-push');
+const { createHarness } = require('./lib/ui-harness.cjs');
+const root = path.join(__dirname, '..'), output = path.join(root, 'outputs/phone-push');
+const harness = createHarness({ name: 'phone-push', width: 1100, height: 900, output });
+harness.ready().then(async () => {
   fs.mkdirSync(output, { recursive: true });
   const code = (await require('esbuild').build({ stdin: { contents: `
       export { initPhonePushSettings, applyPhonePush } from './src/renderer/phone-push-settings.ts';
@@ -29,11 +30,12 @@ app.whenReady().then(async () => {
   const css = linked.map(name => name === 'icons.css' ? icons : fs.readFileSync(path.join(root, 'src/renderer', name), 'utf8')).join('\n');
   const html = withoutScripts(fs.readFileSync(path.join(root, 'src/renderer/index.html'), 'utf8')).replace(/<link\b[^>]*>/g, '')
     .replace('</head>', `<style>${css}</style></head>`);
-  const win = new BrowserWindow({ show: false, width: 1100, height: 900, webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
-  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  await harness.window({ webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
+  const win = harness.win;
+  await harness.loadHtml(html);
   win.webContents.on('console-message', (_e, _l, message) => { if (/error|Error/.test(message) && !/Invalid URL/.test(message)) console.error('renderer:', message); });
-  await win.webContents.executeJavaScript(code);
-  await win.webContents.executeJavaScript(`(()=>{
+  await harness.js(code);
+  await harness.js(`(()=>{
     phone.initLanguage();
     const ok = data => Promise.resolve({ ok: true, data });
     phone.initPhonePushSettings({ testPhonePush: () => ok(undefined), setPhonePushToken: () => ok({}) }, { save: () => Promise.resolve(), applied: () => {}, toast: () => {} });
@@ -61,16 +63,16 @@ app.whenReady().then(async () => {
   for (const language of languages) {
     for (const [width, height, zoom] of language === 'en' || language === 'de' || language === 'ru' ? [[1100, 900, 1], [720, 900, 1], [1100, 900, 1.5]] : [[1100, 900, 1]]) {
       win.setContentSize(width, height); win.webContents.setZoomFactor(zoom);
-      await new Promise(r => setTimeout(r, 120));
+      await harness.pause(120);
       for (const advanced of [false, true]) {
       const tag = `${language}-${width}${zoom === 1 ? '' : '-zoom'}${advanced ? '-advanced' : ''}`;
       // Server, token and a new topic wait behind Advanced; both states are measured.
-      await win.webContents.executeJavaScript(`document.getElementById('phonePushAdvanced').open = ${advanced}; true`);
-      await win.webContents.executeJavaScript(`phone.setLanguage(${JSON.stringify(language)}); true`);
+      await harness.js(`document.getElementById('phonePushAdvanced').open = ${advanced}; true`);
+      await harness.js(`phone.setLanguage(${JSON.stringify(language)}); true`);
       // The page reflows after a zoom or size change; the app aligns on the next state push, as here.
-      await win.webContents.executeJavaScript(`phone.applyPhonePush(window.fixtureState); true`);
-      await new Promise(r => setTimeout(r, 60));
-      const result = await win.webContents.executeJavaScript(measure);
+      await harness.js(`phone.applyPhonePush(window.fixtureState); true`);
+      await harness.pause(60);
+      const result = await harness.js(measure);
       results.push({ tag, ...result });
       assert.deepEqual(result.cut, [], 'nothing cut ' + tag);
       assert.deepEqual(result.tall, [], 'buttons and choices on one line ' + tag);
@@ -82,13 +84,13 @@ app.whenReady().then(async () => {
       if (zoom === 1 && (width === 1100 ? ['en', 'de', 'ja'].includes(language) : language === 'en')) {
         // An offscreen window hands back its last painted frame: let the scroll above paint first,
         // or the picture shows the top of the page instead of this section.
-        await win.webContents.executeJavaScript('new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 50))))');
+        await harness.js('new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 50))))');
         fs.writeFileSync(path.join(output, `phone-${tag}.png`), (await win.webContents.capturePage(result.box)).toPNG());
       }
       if (advanced) assert.equal(result.inputLefts.length === 1 && result.fieldRights.length === 1, true, 'all three fields on one grid ' + tag);
       if (!advanced) {
         // #1802: Play sounds sits under "Notify when a chat finishes", on the same edges, nothing cut.
-        const sound = await win.webContents.executeJavaScript(`(()=>{
+        const sound = await harness.js(`(()=>{
           const rows = ['turnNotifications', 'soundCues'].map(id => document.getElementById(id).closest('.setting'));
           rows[0].scrollIntoView({ block: 'center' });
           const r = rows.map(row => row.getBoundingClientRect()), switches = rows.map(row => row.querySelector('input').getBoundingClientRect());
@@ -100,7 +102,7 @@ app.whenReady().then(async () => {
         results.push({ tag: tag + '-sounds', ...sound });
         assert.ok(sound.adjacent && sound.rights.length === 1 && sound.lefts.length === 1 && sound.inside && sound.cut === 0, 'Play sounds row aligned and whole ' + tag + JSON.stringify(sound));
         if (zoom === 1 && width === 1100 && ['en', 'de', 'ja'].includes(language)) {
-          await win.webContents.executeJavaScript('new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 50))))');
+          await harness.js('new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 50))))');
           fs.writeFileSync(path.join(output, `sounds-${language}.png`), (await win.webContents.capturePage(sound.box)).toPNG());
         }
       }
@@ -110,5 +112,5 @@ app.whenReady().then(async () => {
   win.setContentSize(1100, 900); win.webContents.setZoomFactor(1);
   fs.writeFileSync(path.join(output, 'measurements.json'), JSON.stringify(results, null, 2));
   console.log('Passed: Play sounds sits aligned under Notify when a chat finishes, and phone notifications keep one edge for fields and switches, cut nothing and keep controls on one line in all 13 languages (English, German and Russian also narrow and zoomed).');
-  win.destroy(); app.exit(0);
-}).catch(error => { console.error(error); app.exit(1); });
+  harness.finish();
+}).catch(error => { console.error(error); harness.onError(error); });

@@ -1,9 +1,16 @@
 // Real Chromium and production renderer; isolated API fixture, no provider or live outbox.
 const { withoutScripts } = require('./ui-check-page.cjs');
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename, ...process.argv.slice(2)],
+    { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = path.resolve(__dirname, '..');
 const { fixtureConfigSource, BENIGN_RENDERER_ERRORS } = require('./fixtures/app-defaults.cjs');
 // The first plain argument; switches such as verify-ui's --lang=en-US are not an output folder.
@@ -12,9 +19,9 @@ const output = outputArg ? path.resolve(root, outputArg) : path.join(root, '.tmp
 // A fresh profile each run: a composer draft the previous run left behind makes the send button
 // read Send instead of Stop, and the run then fails on the second try on the same machine.
 fs.rmSync(path.join(output, 'runtime'), { recursive: true, force: true });
-app.setPath('userData', path.join(output, 'runtime'));
+const harness = createHarness({ name: 'input-queue', width: 1100, height: 800, userData: path.join(output, 'runtime'), output });
 
-app.whenReady().then(async () => {
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   const fixture = `
     addEventListener('error', event => { if (!${JSON.stringify(BENIGN_RENDERER_ERRORS)}.includes(event.message)) window.fixtureError = event.message; });
@@ -64,16 +71,16 @@ app.whenReady().then(async () => {
         response.setHeader('Content-Type', 'text/html'); response.end(await vite.transformIndexHtml('/fixture.html', source));
       });
     } }] });
-  let win;
   try {
     fs.mkdirSync(output, { recursive: true }); await server.listen();
-    win = new BrowserWindow({ show: false, width: 1100, height: 800, webPreferences: { sandbox: true, backgroundThrottling: false } });
-    await win.loadURL(server.resolvedUrls.local[0] + 'fixture.html');
-    const js = code => win.webContents.executeJavaScript(code);
+    await harness.window({ webPreferences: { sandbox: true, backgroundThrottling: false, offscreen: false } });
+    const win = harness.win;
+    await harness.loadUrl(server.resolvedUrls.local[0] + 'fixture.html');
+    const js = code => harness.js(code);
     const wait = async condition => {
       for (let i = 0; i < 160; i++) {
         if (await js(condition)) return;
-        await new Promise(resolve => setTimeout(resolve, 25));
+        await harness.pause(25);
       }
       throw new Error('Renderer condition timed out: ' + condition + ' ' + JSON.stringify(await js('({ready:!!window.fixtureReady,error:window.fixtureError,keys:window.fixtureKeys,focused:document.activeElement?.id,stops:window.queueFixture?.stops})')));
     };
@@ -123,7 +130,7 @@ app.whenReady().then(async () => {
       assert.ok(geometry.fieldWidth > 40 && geometry.fieldRight <= geometry.saveLeft && geometry.trashTop >= geometry.saveBottom, JSON.stringify(geometry));
       assert.ok(geometry.trashRight <= geometry.viewport, JSON.stringify(geometry));
       await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await harness.pause(150);
       fs.writeFileSync(path.join(output, `editor-${width}.png`), (await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG());
       checks.push({ width, ...geometry });
     }
@@ -180,7 +187,7 @@ app.whenReady().then(async () => {
       assert.ok(measured.rowEdges.length >= 3 && measured.rowEdges.every(gap => gap === 0), `dock rows reach both edges: ${measured.rowEdges}`);
       if (measured.toast) assert.ok(measured.toast.clearOfComposer && measured.toast.inMain, `toast stays above the composer, inside the chat: ${JSON.stringify(measured.toast)}`);
       await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await harness.pause(150);
       fs.writeFileSync(path.join(output, `recovery-dock-${width}.png`), (await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG());
       checks.push({recoveryWidth:width,...measured});
     }
@@ -220,7 +227,7 @@ app.whenReady().then(async () => {
       })()`);
       assert.deepEqual(history.order,[true,true,true]);assert.equal(history.bottomCards,0);assert.equal(history.error,null);
       await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
-      await new Promise(resolve=>setTimeout(resolve,150));
+      await harness.pause(150);
       fs.writeFileSync(path.join(output,'cancelled-history-'+width+'.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
       checks.push({historyWidth:width,...history});
     }
@@ -255,6 +262,6 @@ app.whenReady().then(async () => {
     checks.push('lost opening is visibly not sent; Retry delivery restores a draft without resending or requeueing');
     fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify(checks, null, 2));
     console.log(JSON.stringify({ passed: checks.length, output }));
-  } finally { win?.destroy(); await server.close(); }
-  app.quit();
-}).catch(error => { console.error(error); app.exit(1); });
+  } finally { await server.close(); }
+  harness.finish();
+}).catch(error => { console.error(error); harness.onError(error); });

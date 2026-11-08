@@ -8,19 +8,21 @@ if (!process.versions.electron) {
   process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
   process.exit(result.status ?? 1);
 }
-const { app, BrowserWindow } = require('electron');
-app.whenReady().then(async () => {
-  const win = new BrowserWindow({ show: false, width: 1200, height: 800, webPreferences: { offscreen: true } });
+const { createHarness } = require('./lib/ui-harness.cjs');
+
+const harness = createHarness({ name: 'composer-context', height: 800 });
+
+harness.ready().then(async () => {
+  await harness.window({ webPreferences: { sandbox: true } });
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/index.html'), 'utf8');
   const composer = html.match(/<form class="composer"[\s\S]*?<\/form>/)[0];
   const css = fs.readFileSync(path.join(__dirname, '../src/renderer/styles.css'), 'utf8');
-  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<style>${css}</style><div id="fixture" style="margin:250px 20px 0">${composer}</div>`));
-  const results = await win.webContents.executeJavaScript(`(async () => {
+  await harness.loadHtml(`<style>${css}</style><div id="fixture" style="margin:250px 20px 0">${composer}</div>`);
+  const results = await harness.js(`(async () => {
     const fixture = document.getElementById('fixture');
     const rect = selector => document.querySelector(selector).getBoundingClientRect();
     const output = [];
     document.getElementById('contextMeter').classList.add('pinned');
-    // 560px is below the narrowest real composer: the 640px minimum window leaves it about 600px wide.
     for (const width of [1000, 640, 560]) for (const images of [false, true]) {
       fixture.style.width = width + 'px';
       const attachments = document.getElementById('composerImages');
@@ -46,5 +48,5 @@ app.whenReady().then(async () => {
     assert.equal(row.overflow, false);
   }
   console.log('Composer geometry passed at 1000/640/560px with/without attachments: ring beside the model picker, centered row, right-aligned visible context dialog.');
-  win.destroy(); app.exit(0);
-}).catch(error => { console.error(error); app.exit(1); });
+  harness.finish();
+}).catch(error => harness.onError(error));

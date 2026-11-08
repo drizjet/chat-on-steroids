@@ -1,15 +1,21 @@
 // Isolated real Electron renderer; no production userData, bridge or provider calls.
 const { withoutScripts } = require('./ui-check-page.cjs');
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
-const root = path.resolve(__dirname, '..');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const { fixtureConfigSource } = require('./fixtures/app-defaults.cjs');
+const root = path.resolve(__dirname, '..');
 const output = path.join(root, 'outputs/chat-switch');
-app.setPath('userData', path.join(output, 'runtime'));
-app.whenReady().then(async () => {
-  const deadline=setTimeout(()=>{console.error('Renderer probe exceeded 45 seconds');app.exit(1)},45000);
+const harness = createHarness({ name: 'chat-switch', width: 1100, height: 800, userData: path.join(output, 'runtime'), output });
+harness.ready().then(async () => {
+  const deadline=setTimeout(()=>{console.error('Renderer probe exceeded 45 seconds');harness.app.exit(1)},45000);
   const { createServer } = await import('vite');
   const fixture = `
     ${fixtureConfigSource()}
@@ -55,23 +61,19 @@ app.whenReady().then(async () => {
         response.end(await vite.transformIndexHtml('/fixture.html',html));
       });
     }}]});
-  let win;
   try {
     await server.listen(); fs.mkdirSync(output,{recursive:true});
-    win=new BrowserWindow({show:false,width:1100,height:800,webPreferences:{sandbox:true,offscreen:true,backgroundThrottling:false}});
+    await harness.window({ webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
+    const win = harness.win;
     win.webContents.on('console-message', event => { if (event.level === 'error') console.error(event.message); });
-    await win.loadURL(server.resolvedUrls.local[0]+'fixture.html');
-    const js=code=>win.webContents.executeJavaScript(code);
-    const until=async predicate=>{
-      for(let i=0;i<100;i++) { if(await js(predicate)) return; await new Promise(r=>setTimeout(r,30)); }
-      throw new Error('Renderer did not reach: '+predicate+' '+await js(`JSON.stringify({ready:window.fixtureReady,rows:document.querySelectorAll('#sessionList [data-id]').length,toasts:document.getElementById('toasts')?.textContent,body:document.body.innerText.slice(-1600)})`));
-    };
-    await until('window.fixtureReady && document.querySelectorAll("#sessionList [data-id]").length===2');
+    await harness.loadUrl(server.resolvedUrls.local[0]+'fixture.html');
+    const js=code=>harness.js(code);
+    await harness.until('window.fixtureReady && document.querySelectorAll("#sessionList [data-id]").length===2', 3000);
     console.log('Fixture ready');
     await js(`document.querySelector('#sessionList [data-id="a"]').click()`);
-    await until(`document.getElementById('timeline').textContent.includes('Transcript a')`);
+    await harness.until(`document.getElementById('timeline').textContent.includes('Transcript a')`, 3000);
     await js(`window.hold=true;document.querySelector('#sessionList [data-id="b"]').click()`);
-    await until('window.pending.length===1');
+    await harness.until('window.pending.length===1', 3000);
     // Sample every paint, deliberately holding IPC much longer than the reported flash.
     const frames=await js(`new Promise(resolve=>{const frames=[];function frame(){
       const timeline=document.getElementById('timeline');
@@ -82,12 +84,12 @@ app.whenReady().then(async () => {
     console.log('Selection frames passed');
     fs.writeFileSync(path.join(output,'pending.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
     await js('window.complete()');
-    await until(`document.getElementById('timeline').textContent.includes('Transcript b')`);
+    await harness.until(`document.getElementById('timeline').textContent.includes('Transcript b')`, 3000);
     assert.equal(await js(`document.getElementById('timeline').inert`),false);
     assert.equal(await js(`document.getElementById('timelineEmpty').hidden`),true);
     fs.writeFileSync(path.join(output,'loaded.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
     await js(`window.hold=false;window.inputs=[{id:'delivery',sessionId:'b',conversationId:'chat-b',state:'browser',owner:'page',text:'Exactly one follow-up',mode:'auto',model:null,reasoningEffort:null,createdAt:3,dueAt:3}];window.changed()`);
-    await until(`document.querySelector('#inputQueue .pending-message')?.textContent.includes('Exactly one follow-up')`);
+    await harness.until(`document.querySelector('#inputQueue .pending-message')?.textContent.includes('Exactly one follow-up')`, 3000);
     console.log('Delivery row ready');
     const deliveryFrames=await js(`new Promise(resolve=>{const frames=[];let n=0;function frame(){
       frames.push({count:[...document.querySelectorAll('#timeline .said.is-user,#inputQueue .pending-message')].filter(el=>el.textContent.includes('Exactly one follow-up')).length,
@@ -97,10 +99,14 @@ app.whenReady().then(async () => {
       if(n===100)resolve(frames);else requestAnimationFrame(frame);
     }requestAnimationFrame(frame)})`);
     assert.ok(deliveryFrames.every(f=>f.count===1 && f.previous && !f.welcome),JSON.stringify(deliveryFrames));
-    await until(`document.getElementById('timeline').textContent.includes('Exactly one follow-up') && !document.querySelector('#inputQueue .pending-message')`);
+    await harness.until(`document.getElementById('timeline').textContent.includes('Exactly one follow-up') && !document.querySelector('#inputQueue .pending-message')`, 3000);
     await js(`document.getElementById('newChat').click()`);
     assert.equal(await js(`document.getElementById('timelineEmpty').hidden`),false);
     fs.writeFileSync(path.join(output,'result.json'),JSON.stringify({passed:true,frames,deliveryFrames},null,2));
     console.log('PASS: retained transcript across selection and 100 delivery frames; exactly one message; explicit New Chat welcome.');
-  } finally { clearTimeout(deadline);win?.destroy(); await server.close(); }
-}).then(()=>app.exit(0),error=>{console.error(error);app.exit(1)});
+  } finally { clearTimeout(deadline); await server.close(); }
+  harness.finish();
+}).catch(async error => {
+  console.error(error);
+  harness.onError(error);
+});

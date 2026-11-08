@@ -10,9 +10,11 @@ if (!process.versions.electron) {
   const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
   process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || ''); process.exit(result.status ?? 1);
 }
-const { app, BrowserWindow } = require('electron');
-app.whenReady().then(async () => {
-  const root = path.join(__dirname, '..'), output = path.join(root, 'outputs/stopped-caption');
+const root = path.join(__dirname, '..'), output = path.join(root, 'outputs/stopped-caption');
+const { createHarness } = require('./lib/ui-harness.cjs');
+const harness = createHarness({ name: 'stopped-caption', width: 1100, height: 760, output });
+
+harness.ready().then(async () => {
   fs.mkdirSync(output, { recursive: true });
   const code = (await require('esbuild').build({ entryPoints: [path.join(root, 'src/renderer/chat.ts')],
     bundle: true, write: false, platform: 'browser', format: 'iife', globalName: 'chat', logLevel: 'error',
@@ -24,9 +26,9 @@ app.whenReady().then(async () => {
   const css = fs.readFileSync(path.join(root, 'src/renderer/styles.css'), 'utf8');
   const html = withoutScripts(fs.readFileSync(path.join(root, 'src/renderer/index.html'), 'utf8')).replace(/<link\b[^>]*>/g, '')
     .replace('</head>', `<style>${css}</style></head>`);
-  const win = new BrowserWindow({ show: false, width: 1100, height: 760,
-    webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
-  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  await harness.window();
+  const win = harness.win;
+  await harness.loadHtml(html);
   await win.webContents.executeJavaScript(`(() => {
     const ok = data => Promise.resolve({ok:true,data});
     const started = Date.now() - (6 * 3600 + 12 * 60) * 1000;
@@ -45,8 +47,7 @@ app.whenReady().then(async () => {
     }, {get:(target,key)=>target[key]??(()=>ok(null))});
     window.frame=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
   })()`);
-  await win.webContents.executeJavaScript(code);
-  // What a person sees: the line under the question in the timeline (the header caption is mirrored there).
+  await harness.js(code);
   const caption = `(async()=>{await frame();const n=document.querySelector('#timeline .turn-stopped');
     if(!n) return {text:null,visible:false};
     const label=n.firstElementChild,r=n.getBoundingClientRect(),q=document.querySelector('#timeline .ev-user_message').getBoundingClientRect();
@@ -54,7 +55,7 @@ app.whenReady().then(async () => {
       fits:label.scrollWidth<=n.clientWidth+1&&r.right<=innerWidth,color:getComputedStyle(n).color,
       red:getComputedStyle(n).color===getComputedStyle(document.documentElement).getPropertyValue('--red').trim()||getComputedStyle(n).color!==getComputedStyle(document.querySelector('#timeline .ev-user_message')).color,
       working:!!document.querySelector('#timeline .turn-status.is-working'),thinking:!!document.querySelector('#timeline .turn-now:not([hidden])')}})()`;
-  const working = await win.webContents.executeJavaScript(`(async()=>{
+  const working = await harness.js(`(async()=>{
     chat.initChat({state:()=>null,save:async()=>{}});chat.chatVisible(true);await frame();
     document.querySelector('#sessionList [data-id="stopped-fixture"]').click();
     for(let i=0;i<120&&!/^Working for /.test(document.getElementById('chatState').textContent);i++) await frame();
@@ -62,27 +63,28 @@ app.whenReady().then(async () => {
   })()`);
   assert.match(working, /^Working for 6h 12m \d+s$/, working);
   fs.writeFileSync(path.join(output, 'before-working.png'), (await win.webContents.capturePage()).toPNG());
-  // The app gives up: no page took this chat's repairs. The window learns it on its next read of the controls.
-  await win.webContents.executeJavaScript(`(async()=>{controls.activeTurnId=null;controls.pageless=true;
+  await harness.js(`(async()=>{controls.activeTurnId=null;controls.pageless=true;
     chat.chatVisible(false);chat.chatVisible(true);
     for(let i=0;i<120&&!document.querySelector('#timeline .turn-stopped');i++) await frame();})()`);
   const results = [];
   for (const width of [1100, 720]) for (const zoom of [1, 1.5]) {
     win.setContentSize(width, 760); win.webContents.setZoomFactor(zoom);
-    const result = await win.webContents.executeJavaScript(caption);
+    const result = await harness.js(caption);
     assert.equal(result.text, "Stopped · open this chat's tab again to continue", JSON.stringify({ width, zoom, ...result }));
     assert.ok(result.visible && result.fits && result.below, JSON.stringify({ width, zoom, ...result }));
     assert.ok(!result.working && !result.thinking, 'the running line and "Thinking" are gone: ' + JSON.stringify(result));
     results.push({ width, zoom, ...result });
     if (width === 1100 && zoom === 1) fs.writeFileSync(path.join(output, 'after-stopped.png'), (await win.webContents.capturePage()).toPNG());
   }
-  // The page polls again: the verdict lifts and the caption goes with it.
   win.setContentSize(1100, 760); win.webContents.setZoomFactor(1);
-  const back = await win.webContents.executeJavaScript(`(async()=>{controls.pageless=false;chat.chatVisible(false);chat.chatVisible(true);
+  const back = await harness.js(`(async()=>{controls.pageless=false;chat.chatVisible(false);chat.chatVisible(true);
     for(let i=0;i<120&&document.querySelector('#timeline .turn-stopped');i++) await frame();
     return {line:!!document.querySelector('#timeline .turn-stopped'),caption:document.getElementById('chatState').textContent};})()`);
   assert.deepEqual(back, { line: false, caption: '' });
   fs.writeFileSync(path.join(output, 'measurements.json'), JSON.stringify(results, null, 2));
   console.log('Passed: a stopped chat says so in one fitting line at four size/zoom combinations, and the line goes when the page is back.');
-  win.destroy(); app.exit(0);
-}).catch(error => { console.error(error); app.exit(1); });
+  harness.finish();
+}).catch(error => {
+  console.error(error);
+  harness.onError(error);
+});

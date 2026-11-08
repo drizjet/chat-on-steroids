@@ -2,19 +2,25 @@
 // Aged data (2.1.47 round, the user: "389h ago"): chats from seconds to years old, with long titles,
 // in every language. No visible text, tooltip, title or label may run one unit up into the hundreds,
 // show a clock past 59 minutes as minutes, or leak NaN, Infinity, undefined, [object or a minus age.
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = process.env.COS_UI_ROOT || path.resolve(__dirname, '..');
 const output = path.resolve(process.env.COS_UI_OUTPUT || path.join(root, '.tmp', 'aged-data'));
 const { fixtureConfigSource, BENIGN_RENDERER_ERRORS } = require(path.join(root, 'scripts/fixtures/app-defaults.cjs'));
 fs.rmSync(path.join(output, 'profile'), { recursive: true, force: true });
-app.setPath('userData', path.join(output, 'profile')); app.disableHardwareAcceleration();
-const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+const harness = createHarness({ name: 'aged-data', width: 1280, height: 800, userData: path.join(output, 'profile'), output, ignoreErrors: BENIGN_RENDERER_ERRORS });
+harness.app.disableHardwareAcceleration();
 const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
 // From just now to two and a half years, each unit boundary and the reported 389 hours.
 const AGES = [20_000, 5 * MIN, 3 * HOUR, 30 * HOUR, 6 * DAY, 389 * HOUR, 45 * DAY, 400 * DAY, 900 * DAY];
 const LANGUAGES = ['en', 'de', 'es', 'fr', 'ja', 'ko', 'pt-BR', 'pt-PT', 'ru', 'tr', 'vi', 'zh-CN', 'zh-TW'];
-let server, win;
+let server;
 const fixture = `(() => {
  const old=window.api,f=composerFixture,ok=data=>Promise.resolve({ok:true,data:structuredClone(data)});
  const ages=[${AGES.map(Number).join(',')}];
@@ -47,7 +53,7 @@ const RUNAWAY = [
   [/\bNaN\b|\bInfinity\b|\bundefined\b|\[object /, 'a broken value'],
   [/(^|\s)-\d+\s?(s|m|h|d|w|j|дн|sem)\b/u, 'a negative age']
 ];
-app.whenReady().then(async () => {
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   server = await createServer({ configFile:false, root:path.join(root,'src/renderer'), cacheDir:path.join(output,'vite'), logLevel:'error',
     resolve:{alias:{'@phosphor-icons/web':path.join(root,'node_modules/@phosphor-icons/web/src')}},
@@ -55,14 +61,15 @@ app.whenReady().then(async () => {
     plugins:[{name:'aged-data-fixture',transformIndexHtml:html=>html.replace('</head>','<script src="/timeline-fixture.js"></script></head>'),
       configureServer(vite){vite.middlewares.use((req,res,next)=>{if(req.url!=='/timeline-fixture.js')return next();res.setHeader('Content-Type','text/javascript');res.end(fixtureConfigSource()+fs.readFileSync(path.join(root,'scripts/fixtures/composer-ui.js'),'utf8')+fixture);});}}] });
   await server.listen();
-  win = new BrowserWindow({show:false,width:1280,height:800,webPreferences:{sandbox:true,offscreen:true,backgroundThrottling:false}});
+  await harness.window({ webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
+  const win = harness.win;
   const errors=[];
   win.webContents.on('console-message',e=>{if(e.level==='error'&&!BENIGN_RENDERER_ERRORS.includes(e.message))errors.push(e.message);});
-  const js=code=>win.webContents.executeJavaScript(code);
-  const until=async expression=>{for(const deadline=Date.now()+15000;Date.now()<deadline;){if(await js(expression))return;await pause(40);}
+  const js=code=>harness.js(code);
+  const until=async expression=>{for(const deadline=Date.now()+15000;Date.now()<deadline;){if(await js(expression))return;await harness.pause(40);}
     const seen=await js(`({rows:document.querySelectorAll('#sessionList .sess[data-id]').length,lang:document.documentElement.lang,list:(document.getElementById('sessionList')?.innerText||'').slice(0,200)})`).catch(()=>null);
     throw new Error('Timed out: '+expression+' — saw '+JSON.stringify(seen)+' errors '+JSON.stringify(errors.slice(0,3)));};
-  await win.loadURL(server.resolvedUrls.local[0]);
+  await harness.loadUrl(server.resolvedUrls.local[0]);
   await until(`document.querySelectorAll('#sessionList .sess[data-id^="aged-chat-"]').length===${AGES.length}`);
   const found=[];
   // Both sidebars: the project tree (ages in each row's tooltip) and the inbox (an age beside each title).
@@ -76,11 +83,11 @@ app.whenReady().then(async () => {
     const language = await js(`(()=>{const s=document.getElementById('uiLanguage'),value=s.options[${Number(index)}].value;window.fixtureLanguage=value;s.value=value;s.dispatchEvent(new Event('change',{bubbles:true}));return value;})()`);
     await until(`document.documentElement.lang===document.getElementById('uiLanguage').options[${Number(index)}].value`);
     await js(`window.pushState()`);
-    await pause(250);
+    await harness.pause(250);
     const text=await js(READ);
     for (const line of text.split('\n')) for (const [pattern,why] of RUNAWAY) if (pattern.test(line)) found.push(`${language}: ${why}: ${line.trim().slice(0,160)}`);
     // The picture shows the oldest chats, which sit at the end of the list.
-    if (language==='en'||language==='de') { await js(`[...document.querySelectorAll('#sessionList .sess[data-id]')].pop()?.scrollIntoView({block:'end'})`); await pause(150); fs.mkdirSync(output,{recursive:true}); fs.writeFileSync(path.join(output,`aged-${layout}-${language}.png`),(await win.webContents.capturePage()).toPNG()); }
+    if (language==='en'||language==='de') { await js(`[...document.querySelectorAll('#sessionList .sess[data-id]')].pop()?.scrollIntoView({block:'end'})`); await harness.pause(150); fs.mkdirSync(output,{recursive:true}); fs.writeFileSync(path.join(output,`aged-${layout}-${language}.png`),(await win.webContents.capturePage()).toPNG()); }
   }
   if (layout==='inbox') {
     // The inbox draws an age beside every quiet chat: the check must have read them.
@@ -92,10 +99,10 @@ app.whenReady().then(async () => {
   // The 16-day chat's tooltip, where "389h ago" was (kept for the PR's before/after pictures).
   await js(`(()=>{window.fixtureLanguage='en';const s=document.getElementById('uiLanguage');s.value='en';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
   await until(`document.documentElement.lang==='en'`);
-  win.show(); await pause(150);
+  win.show(); await harness.pause(150);
   const box=await js(`(()=>{const r=document.querySelector('#sessionList .sess[data-id="aged-chat-5"]').getBoundingClientRect();return {x:Math.round(r.x+40),y:Math.round(r.y+r.height/2)};})()`);
   await win.webContents.sendInputEvent({type:'mouseMove',x:box.x,y:box.y});
-  await pause(1200);
+  await harness.pause(1200);
   fs.mkdirSync(output,{recursive:true}); fs.writeFileSync(path.join(output,'aged-tooltip-en.png'),(await win.webContents.capturePage()).toPNG());
   // The check reads what it claims to: each aged chat has a row, and its tooltip names its age.
   const titles=await js(`[...document.querySelectorAll('#sessionList .sess[data-id^="aged-chat-"]')].map(r=>r.getAttribute('title')||r.dataset.tooltip||'')`);
@@ -104,5 +111,6 @@ app.whenReady().then(async () => {
   assert.deepEqual(found,[],'Aged data reads naturally in every language:\n'+found.join('\n'));
   assert.deepEqual(errors,[],'No renderer errors');
   console.log(`PASS verify-aged-data: ${AGES.length} ages × ${LANGUAGES.length} languages × 2 sidebars, no runaway units or broken values`);
-  win.destroy(); await server.close(); app.exit(0);
-}).catch(async error=>{console.error(error.stack||error);try{win?.destroy();await server?.close();}catch{}app.exit(1);});
+  await server.close();
+  harness.finish();
+}).catch(async error=>{console.error(error.stack||error);try{await server?.close();}catch{}harness.onError(error);});

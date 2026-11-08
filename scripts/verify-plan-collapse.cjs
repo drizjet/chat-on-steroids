@@ -1,14 +1,20 @@
 // Real Electron layout with the production renderer and CSS. No user session is loaded.
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
-app.setPath('userData', path.join(__dirname, '../.tmp/plan-collapse/runtime'));
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
+const harness = createHarness({ name: 'plan-collapse', width: 1000, height: 760, userData: path.join(__dirname, '../.tmp/plan-collapse/runtime') });
 // This verifier deliberately destroys the first mode's only window before creating the second.
 // Own window lifecycle until the serialized matrix finishes, then quit explicitly below.
-app.on('window-all-closed', () => {});
+harness.app.on('window-all-closed', () => {});
 
-app.whenReady().then(async () => {
+harness.ready().then(async () => {
   const { build } = await import('vite');
   const bundle = await build({ configFile: false, logLevel: 'error', build: {
     write: false, minify: false,
@@ -21,7 +27,7 @@ app.whenReady().then(async () => {
   } });
   const motionCode = motion[0].output.find(item => item.type === 'chunk').code;
   const css = fs.readFileSync(path.join(__dirname, '../src/renderer/styles.css'), 'utf8');
-  const html = 'data:text/html;charset=utf-8,' + encodeURIComponent(`<style>${css}</style>
+  const rawHtml = `<style>${css}</style>
     <div data-panel="chat" style="height:100vh"><section class="card is-session" style="height:100%">
     <div class="subhead">Plan layout check</div><div id="chatBody" class="scroll"><div style="height:2000px">Conversation</div></div>
     <div class="composer-dock" id="composerDock"><div class="composer-dock-body"><section class="agent-plan" id="agentPlan" hidden></section><div id="queue" hidden><div class="queued-input">Queued instruction</div></div><div id="activeGoalRow" hidden>Goal</div></div></div>
@@ -33,35 +39,35 @@ app.whenReady().then(async () => {
       await Promise.all(document.getElementById('composerDock').getAnimations().map(a => a.finished.catch(() => {})));
       await frames();
     };
-    </script>`);
+    </script>`;
 
   const runMode = async preference => {
-    const win = new BrowserWindow({ show: false, width: 1000, height: 760,
-      webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
+    await harness.window({ webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
+    const win = harness.win;
     try {
       // Establish a document before sending CDP commands; Electron may defer debugger commands
       // issued before the target's first navigation.
-      await win.loadURL('about:blank');
+      await harness.loadUrl('about:blank');
       win.webContents.debugger.attach('1.3');
       // Do not inherit the host OS preference. Each mode gets a fresh renderer whose production
       // matchMedia calls see one explicit CDP preference from first load through teardown.
       await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', {
         features: [{ name: 'prefers-reduced-motion', value: preference }]
       });
-      await win.loadURL(html);
-      const mediaReduced = await win.webContents.executeJavaScript("matchMedia('(prefers-reduced-motion: reduce)').matches");
+      await harness.loadHtml(rawHtml);
+      const mediaReduced = await harness.js("matchMedia('(prefers-reduced-motion: reduce)').matches");
       assert.equal(mediaReduced, preference === 'reduce', `CDP must select ${preference} before renderer motion is installed`);
-      await win.webContents.executeJavaScript(code);
-      await win.webContents.executeJavaScript(motionCode);
-      await win.webContents.executeJavaScript("void MotionProbe.installComposerDockMotion(document.getElementById('composerDock'))");
+      await harness.js(code);
+      await harness.js(motionCode);
+      await harness.js("void MotionProbe.installComposerDockMotion(document.getElementById('composerDock'))");
 
       const results = [];
       for (const zoom of [1, 1.5]) {
         win.webContents.setZoomFactor(zoom);
         // Zoom is committed across the renderer boundary. Do not compare geometry
         // captured before its reflow with geometry captured after a later frame.
-        await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-        results.push(await win.webContents.executeJavaScript(`(async () => {
+        await harness.js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+        results.push(await harness.js(`(async () => {
           const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
           const host = document.getElementById('agentPlan');
           const plan = { updatedAt: 1, plan: Array.from({length: 12}, (_, i) => ({step: 'Step ' + i, status: 'pending'})) };
@@ -203,5 +209,5 @@ app.whenReady().then(async () => {
       }
     }
   }
-  app.quit();
-}).catch(error => { console.error(error); app.exit(1); });
+  harness.finish();
+}).catch(error => { console.error(error); harness.onError(error); });

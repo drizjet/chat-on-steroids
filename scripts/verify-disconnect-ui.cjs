@@ -1,14 +1,20 @@
 // Production renderer in isolated Electron; no tunnel, credentials or user data.
 const { withoutScripts } = require('./ui-check-page.cjs');
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
-const root = path.resolve(__dirname, '..');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const { fixtureConfigSource } = require('./fixtures/app-defaults.cjs');
+const root = path.resolve(__dirname, '..');
 const output = path.join(root, 'outputs/disconnect-ui');
-app.setPath('userData', path.join(output, 'runtime'));
-app.whenReady().then(async () => {
+const harness = createHarness({ name: 'disconnect-ui', width: 1100, height: 800, userData: path.join(output, 'runtime'), output });
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   const fixture = `
     localStorage.removeItem('cos.ui.language');
@@ -53,19 +59,19 @@ app.whenReady().then(async () => {
         res.setHeader('Content-Type','text/html');res.end(await vite.transformIndexHtml('/fixture.html',html));
       });
     }}]});
-  let win;
   try {
     await server.listen();
-    win=new BrowserWindow({show:false,width:1100,height:800,webPreferences:{sandbox:true,backgroundThrottling:false}});
-    await win.loadURL(server.resolvedUrls.local[0]+'fixture.html');
-    const js=code=>win.webContents.executeJavaScript(code);
-    for(let i=0;i<100 && !(await js('!!window.fixtureReady'));i++) await new Promise(resolve=>setTimeout(resolve,25));
+    await harness.window({ webPreferences: { sandbox: true, backgroundThrottling: false } });
+    const win = harness.win;
+    await harness.loadUrl(server.resolvedUrls.local[0]+'fixture.html');
+    const js = code => harness.js(code);
+    await harness.until('!!window.fixtureReady', 2500);
     assert.equal(await js('!!window.fixtureReady'),true);
     await js(`document.getElementById('sidebarConnection').click()`);
     const point=await js(`(() => {const r=document.getElementById('connectionPopoverToggle').getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};})()`);
     win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point});
     win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...point});
-    for(let i=0;i<100 && !(await js('!!window.releaseDisconnect'));i++) await new Promise(resolve=>setTimeout(resolve,25));
+    await harness.until('!!window.releaseDisconnect', 2500);
     assert.deepEqual(await js(`(() => {const b=document.getElementById('connectionPopoverToggle');for(let i=0;i<100;i++) b.click();return {text:b.textContent,disabled:b.disabled,calls:window.disconnectCalls,title:document.getElementById('connectionPopoverTitle').textContent};})()`),
       {text:'Disconnecting…',disabled:true,calls:1,title:'Disconnecting'});
     assert.equal(await js(`document.getElementById('connectionPopoverTitle').title`),'Closing connection…');
@@ -82,15 +88,15 @@ app.whenReady().then(async () => {
     await js('new Promise(resolve=>setTimeout(resolve,0))');
     // Only while the hold can still be running: the screenshots above may take longer than it under load.
     assert.ok(await js(`Date.now()-window.disconnectingAt>1000 || document.getElementById('connectionPopoverTitle').textContent==='Disconnecting'`));
-    for(let i=0;i<100 && (await js(`document.getElementById('connectionPopoverTitle').textContent`))!=='Not connected';i++) await new Promise(resolve=>setTimeout(resolve,30));
+    await harness.until(`document.getElementById('connectionPopoverTitle').textContent==='Not connected'`, 3000);
     // Disconnected: the capsule is the one Connect; the details only describe.
     assert.deepEqual(await js(`(() => ({title:document.getElementById('connectionPopoverTitle').textContent,actionHidden:document.getElementById('connectionPopoverToggle').closest('.connection-popover-actions').hidden,capsule:document.getElementById('sidebarConnectionLabel').textContent}))()`),{title:'Not connected',actionHidden:true,capsule:'Connect'});
     await js(`document.getElementById('sidebarConnection').click()`);
-    for(let i=0;i<100 && (await js(`document.getElementById('connectionPopoverTitle').textContent`))!=='Connected';i++) await new Promise(resolve=>setTimeout(resolve,30));
+    await harness.until(`document.getElementById('connectionPopoverTitle').textContent==='Connected'`, 3000);
     assert.equal(await js(`document.getElementById('connectionPopoverTitle').textContent`),'Connected');
     console.log('Disconnect renderer passed: native click, visible pending state, 100 ignored duplicate clicks, completion and reconnect.');
   } finally {
-    win?.destroy();await server.close();
+    await server.close();
   }
-  app.exit(0);
-}).catch(error=>{console.error(error);app.exit(1);});
+  harness.finish();
+}).catch(error=>{console.error(error);harness.onError(error);});

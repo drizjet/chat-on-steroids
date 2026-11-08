@@ -8,22 +8,24 @@ if (!process.versions.electron) {
   process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
   process.exit(result.status ?? 1);
 }
-const { app, BrowserWindow } = require('electron');
-app.whenReady().then(async () => {
-  const win = new BrowserWindow({ show: false, width: 1500, height: 1000, webPreferences: { offscreen: true } });
+const { createHarness } = require('./lib/ui-harness.cjs');
+const harness = createHarness({ name: 'chat-width', width: 1500, height: 1000 });
+harness.ready().then(async () => {
+  await harness.window();
+  const win = harness.win;
   const css = fs.readFileSync(path.join(__dirname, '../src/renderer/styles.css'), 'utf8');
-  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<style>${css}</style>
+  await harness.loadHtml(`<style>${css}</style>
     <div id="fixture"><div id="chatBody" class="scroll"><div class="view" id="timelineContent" data-view="timeline">
     <div id="timeline"><button class="timeline-window-note" hidden>Back to latest</button>
     <div class="ev"><div class="ev-body"><p class="msg" id="prose"></p></div></div>
     <details class="tool-group"><summary>Refused to run a tool</summary><div class="tool-group-body" style="height:400px">Recorded tool details</div></details>
-    <div class="ev ev-tool_call"><div class="ev-body"><details class="tool tone-good"><summary><b>Edited 2 files</b><span class="metric"><span class="metric-added">+28</span> <span class="metric-removed">−11</span></span></summary></details></div></div>
-    </div></div></div></div>`));
+    <div class="ev ev-tool_call"><div class="ev-body"><details class="tool tone-good"><summary><b>Edited 2 files</b><span class="metric"><span class="metric-added">+28</span><span class="metric-removed">−11</span></span></summary></details></div></div>
+    </div></div></div></div>`);
   const results = [];
   for (const zoom of [1, 1.17, 1.5]) {
     win.webContents.setZoomFactor(zoom);
     for (const width of [1100, 760, 500]) {
-      const states = await win.webContents.executeJavaScript(`(async () => {
+      const states = await harness.js(`(async () => {
         const pane = document.getElementById('chatBody'), timeline = document.getElementById('timelineContent');
         const prose = document.getElementById('prose'), group = document.querySelector('details'), latest = document.querySelector('button');
         document.getElementById('fixture').style.width = '${width}px';
@@ -52,7 +54,7 @@ app.whenReady().then(async () => {
         assert.equal(state.left, states[0].left, 'Text position must remain stable');
         assert.deepEqual(state.lines, states[0].lines, 'Authored line wrapping must remain identical');
       }
-      const call = await win.webContents.executeJavaScript(`(() => {
+      const call = await harness.js(`(() => {
         const body = document.querySelector('.ev-tool_call .ev-body');
         const head = body.querySelector('summary');
         const label = head.querySelector('b');
@@ -80,5 +82,5 @@ app.whenReady().then(async () => {
   }
   console.log(JSON.stringify(results));
   console.log('Chat width passed: disclosure, history, tail reserve and latest at three widths and zoom levels.');
-  win.destroy(); app.exit(0);
-}).catch(error => { console.error(error); app.exit(1); });
+  harness.finish();
+}).catch(error => harness.onError(error));

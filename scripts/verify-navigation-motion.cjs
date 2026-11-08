@@ -1,24 +1,31 @@
 // Run after npm run build. Production markup/styles in isolated Chromium; no app preload,
 // bridge or user profile. Built assets resolve Phosphor fonts exactly as the shipped UI does.
 const { withoutScripts } = require('./ui-check-page.cjs');
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = path.resolve(__dirname, '..');
 const output = path.join(root, 'outputs/navigation-motion');
-app.setPath('userData', path.join(output, 'runtime'));
-app.whenReady().then(async () => {
+const harness = createHarness({ name: 'navigation-motion', width: 1000, height: 850, userData: path.join(output, 'runtime'), output });
+
+harness.ready().then(async () => {
   fs.mkdirSync(output, { recursive: true });
   const html = withoutScripts(fs.readFileSync(path.join(root, 'out/renderer/index.html'), 'utf8'))
     .replace('<head>', `<head><base href="${pathToFileURL(path.join(root, 'out/renderer/')).href}">`);
   const fixture = path.join(output, 'fixture.html');
   fs.writeFileSync(fixture, html);
-  const win = new BrowserWindow({ show: false, width: 1000, height: 850, webPreferences: { sandbox: true } });
+  const win = await harness.window({ webPreferences: { sandbox: true } });
   try {
-    await win.loadFile(fixture);
-    const js = code => win.webContents.executeJavaScript(code);
+    await harness.loadUrl(pathToFileURL(fixture).href);
+    const js = code => harness.js(code);
     await js(`document.fonts.ready;`);
     assert.equal(await js(`document.fonts.check('16px "CoS Phosphor"')`), true);
     await win.webContents.debugger.attach('1.3');
@@ -93,7 +100,9 @@ app.whenReady().then(async () => {
         if (!reduced) fs.writeFileSync(path.join(output, `${theme}-${width}.png`), (await win.webContents.capturePage()).toPNG());
       }
     }
-    console.log('Navigation motion passed: two themes, two widths, reduced motion, library/chat continuity, Settings return and interrupted reopen.');
-  } finally { win.destroy(); }
-  app.exit(0);
-}).catch(error => { console.error(error); app.exit(1); });
+  } finally {
+    if (!win.isDestroyed() && win.webContents.debugger.isAttached()) win.webContents.debugger.detach();
+  }
+  console.log('Navigation motion passed: two themes, two widths, reduced motion, library/chat continuity, Settings return and interrupted reopen.');
+  harness.finish();
+}).catch(error => harness.onError(error));

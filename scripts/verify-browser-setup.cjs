@@ -1,11 +1,23 @@
 // Production Setup modules in isolated Electron; never starts a bridge or visits ChatGPT.
-const { app, BrowserWindow, Menu } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
-const { fixtureConfigSource } = require('./fixtures/app-defaults.cjs');
 const preview = process.argv.includes('--preview');
-app.setPath('userData', path.resolve(preview ? 'outputs/browser-setup-runtime' : 'outputs/browser-setup-test-runtime'));
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename, ...process.argv.slice(2)],
+    { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
+const { fixtureConfigSource } = require('./fixtures/app-defaults.cjs');
+const output = path.resolve('outputs/browser-setup', String(Date.now()));
+const harness = createHarness({
+  name: 'browser-setup', width: 1280, height: 1000,
+  userData: path.resolve(preview ? 'outputs/browser-setup-runtime' : 'outputs/browser-setup-test-runtime'),
+  output
+});
 /** The production page without its entry script, which the fixture replaces. */
 function fixturePage() {
   const entry = '<script type="module" src="./main.ts"></script>';
@@ -13,9 +25,9 @@ function fixturePage() {
   assert.equal(html.split(entry).length, 2, 'index.html has exactly one entry script');
   return html.replace(entry, '');
 }
-app.whenReady().then(async () => {
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
-  const output = path.resolve('outputs/browser-setup', String(Date.now())); fs.mkdirSync(output, { recursive: true });
+  fs.mkdirSync(output, { recursive: true });
   const defaults = fixtureConfigSource();
   const server = await createServer({ configFile: false, root: path.resolve('src/renderer'),
     server: { host: '127.0.0.1', port: 0 }, plugins: [{ name: 'browser-setup-fixture', configureServer(vite) {
@@ -45,13 +57,13 @@ app.whenReady().then(async () => {
         res.setHeader('Content-Type', 'text/html'); res.end(await vite.transformIndexHtml('/browser-setup-preview.html', html));
       });
     } }] });
-  let win;
   try {
     await server.listen();
-    win = new BrowserWindow({ show: preview, width: 1280, height: 1000, webPreferences: { sandbox: true, backgroundThrottling: false } });
-    await win.loadURL(server.resolvedUrls.local[0] + 'browser-setup-preview.html');
-    const js = code => win.webContents.executeJavaScript(code);
-    for (let attempt=0; attempt<100 && !await js('!!window.fixtureReady'); attempt++) await new Promise(resolve=>setTimeout(resolve,100));
+    await harness.window({ webPreferences: { sandbox: true, backgroundThrottling: false } });
+    const win = harness.win;
+    await harness.loadUrl(server.resolvedUrls.local[0] + 'browser-setup-preview.html');
+    const js = code => harness.js(code);
+    for (let attempt=0; attempt<100 && !await js('!!window.fixtureReady'); attempt++) await harness.pause(100);
     assert.equal(await js('window.fixtureReady'), true);
     if (preview) {
       const title = 'Setup completo — prévia com dados simulados';
@@ -59,6 +71,7 @@ app.whenReady().then(async () => {
       win.webContents.on('did-finish-load', () => { void js("setLanguage('pt-BR')"); win.setTitle(title); });
       await js("setLanguage('pt-BR')"); win.setTitle(title);
       const connection = (present, version) => { void js(`fixture.bridge.externalExtension={present:${present},version:${JSON.stringify(version)},lastSeenAt:Date.now()};paint()`); };
+      const { Menu } = require('electron');
       Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: 'Simular conexão', submenu: [
         { label: 'Aguardando extensão', click: () => connection(false, null) },
         { label: 'Extensão conectada', click: () => connection(true, '2.1.26') },
@@ -84,7 +97,6 @@ app.whenReady().then(async () => {
       }
       console.log('Preview open; Vite reloads it when the Setup sources change.');
       await new Promise(resolve => win.once('closed', resolve));
-      win = null;
       return;
     }
     assert.equal(await js('document.getElementById("browserContinue").disabled'), true, 'CoS presence alone cannot unlock setup');
@@ -143,5 +155,6 @@ app.whenReady().then(async () => {
     assert.equal(await js('document.getElementById("browserConnectionLost").hidden'), false);
     assert.equal(await js('paint().ready'), false);
     console.log('PASS: external-only gating, versions, two stages, icons, each browser\'s own pictures, explicit browser opening, desktop/narrow layouts.');
-  } finally { win?.destroy(); await server.close(); app.quit(); }
-}).catch(error => { console.error(error); app.exit(1); });
+  } finally { await server.close(); }
+  harness.finish();
+}).catch(error => { console.error(error); harness.onError(error); });

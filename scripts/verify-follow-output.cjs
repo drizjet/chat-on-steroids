@@ -1,17 +1,23 @@
 // "Follow new output": the chat stays at its end while its content grows outside a repaint, stops
 // following once the reader scrolls up, resumes at the end, and is inert when switched off.
 // Isolated real Electron renderer; synthetic session only.
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '..');
 const { fixtureConfigSource } = require('./fixtures/app-defaults.cjs');
 const output = path.join(root, 'outputs/follow-output');
-app.setPath('userData', path.join(output, 'runtime'));
-app.whenReady().then(async () => {
-  const { createServer } = await import('vite');
-  const fixture = `
+const { createHarness } = require('./lib/ui-harness.cjs');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+
+const harness = createHarness({ name: 'follow-output', width: 1100, height: 760, userData: path.join(output, 'runtime'), output });
+let server;
+const fixture = `
     ${fixtureConfigSource()}
     const config = fixtureConfig({
       roots:[{name:'fixture',path:'C:/fixture'}], readOnly:true, capabilities:{read:true,browse:true},
@@ -40,47 +46,50 @@ app.whenReady().then(async () => {
     window.fixtureState=state;
     window.fixtureReady=true;
   `;
-  const server = await createServer({configFile:false,root:path.join(root,'src/renderer'),
-    server:{host:'127.0.0.1',port:0,hmr:false},plugins:[{name:'follow-output-fixture',configureServer(vite) {
-      vite.middlewares.use('/fixture.html',async (_request,response)=>{
-        // The page's one entry script, removed by its exact text so the fixture boots it instead.
-        const entry='<script type="module" src="./main.ts"></script>';
-        const page=fs.readFileSync(path.join(root,'src/renderer/index.html'),'utf8');
-        if(!page.includes(entry)) throw new Error('index.html entry script changed: update this fixture');
-        const html=page.replace(entry,'').replace('</body>','<script type="module">'+fixture+'</script></body>');
-        response.setHeader('Content-Type','text/html');
-        response.end(await vite.transformIndexHtml('/fixture.html',html));
+
+harness.ready().then(async () => {
+  const { createServer } = await import('vite');
+  server = await createServer({ configFile: false, root: path.join(root, 'src/renderer'),
+    server: { host: '127.0.0.1', port: 0, hmr: false }, plugins: [{ name: 'follow-output-fixture', configureServer(vite) {
+      vite.middlewares.use('/fixture.html', async (_request, response) => {
+        const entry = '<script type="module" src="./main.ts"></script>';
+        const page = fs.readFileSync(path.join(root, 'src/renderer/index.html'), 'utf8');
+        if (!page.includes(entry)) throw new Error('index.html entry script changed: update this fixture');
+        const html = page.replace(entry, '').replace('</body>', '<script type="module">' + fixture + '</script></body>');
+        response.setHeader('Content-Type', 'text/html');
+        response.end(await vite.transformIndexHtml('/fixture.html', html));
       });
-    }}]});
-  let win;
-  try {
-    await server.listen(); fs.mkdirSync(output,{recursive:true});
-    win=new BrowserWindow({show:false,width:1100,height:760,webPreferences:{offscreen:true,sandbox:true}});
-    const js=e=>win.webContents.executeJavaScript(e);
-    const pause=ms=>new Promise(r=>setTimeout(r,ms));
-    await win.loadURL(server.resolvedUrls.local[0]+'fixture.html');
-    for(let i=0;i<100&&!(await js('!!window.fixtureReady&&!!document.querySelector("#sessionList [data-id]")'));i++) await pause(100);
-    await js('document.querySelector("#sessionList [data-id]").click()'); await pause(1500);
-    const gap=()=>js(`(()=>{const p=document.getElementById('chatBody');return Math.round(p.scrollHeight-p.clientHeight-p.scrollTop)})()`);
-    // Growth no repaint sees: a block appearing inside the last answer, like an image loading.
-    const grow=async px=>{await js(`(()=>{const rows=document.querySelectorAll('#timeline .ev-assistant_message');const b=document.createElement('div');b.style.height='${px}px';rows[rows.length-1].append(b);return 1})()`);await pause(400);};
-    // The reader's own scrolling: a wheel on the pane, then the position it lands on.
-    const wheelTo=async top=>{await js(`(()=>{const p=document.getElementById('chatBody');p.dispatchEvent(new WheelEvent('wheel',{deltaY:-200,bubbles:true}));p.scrollTop=${top};return 1})()`);await pause(300);};
-    assert.ok(await gap()<=2, 'opens at the end');
-    await grow(240);
-    assert.ok(await gap()<=2, 'follows growth outside a repaint: gap '+(await gap()));
-    fs.writeFileSync(path.join(output,'follows-growth.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
-    await wheelTo(100);
-    await grow(240);
-    const held=await js(`document.getElementById('chatBody').scrollTop`);
-    assert.ok(Math.abs(held-100)<=2, 'keeps a reader who scrolled up in place: '+held);
-    await wheelTo(1e7);
-    await grow(240);
-    assert.ok(await gap()<=2, 'resumes following at the end: gap '+(await gap()));
-    await js(`window.fixtureState.config.ui.followOutput=false`);
-    await grow(240);
-    assert.ok(await gap()>=200, 'switched off, growth outside a repaint is not followed: gap '+(await gap()));
-    console.log('PASS: the chat follows growth at its end, holds a reader who scrolled up, resumes at the end, and stays put when switched off.');
-  } finally { win?.destroy(); await server.close(); app.quit(); }
-// A failed assertion must fail the check: quitting alone exits 0 and reads as a pass.
-}).catch(error => { console.error(error); app.exit(1); });
+    } }] });
+  await server.listen(); fs.mkdirSync(output, { recursive: true });
+  await harness.window();
+  const win = harness.win;
+  const js = e => harness.js(e);
+  const pause = harness.pause;
+  await harness.loadUrl(server.resolvedUrls.local[0] + 'fixture.html');
+  await harness.until('!!window.fixtureReady&&!!document.querySelector("#sessionList [data-id]")', 10000);
+  await js('document.querySelector("#sessionList [data-id]").click()'); await pause(1500);
+  const gap = () => js(`(()=>{const p=document.getElementById('chatBody');return Math.round(p.scrollHeight-p.clientHeight-p.scrollTop)})()`);
+  const grow = async px => { await js(`(()=>{const rows=document.querySelectorAll('#timeline .ev-assistant_message');const b=document.createElement('div');b.style.height='${px}px';rows[rows.length-1].append(b);return 1})()`); await pause(400); };
+  const wheelTo = async top => { await js(`(()=>{const p=document.getElementById('chatBody');p.dispatchEvent(new WheelEvent('wheel',{deltaY:-200,bubbles:true}));p.scrollTop=${top};return 1})()`); await pause(300); };
+  assert.ok(await gap() <= 2, 'opens at the end');
+  await grow(240);
+  assert.ok(await gap() <= 2, 'follows growth outside a repaint: gap ' + (await gap()));
+  fs.writeFileSync(path.join(output, 'follows-growth.png'), (await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG());
+  await wheelTo(100);
+  await grow(240);
+  const held = await js(`document.getElementById('chatBody').scrollTop`);
+  assert.ok(Math.abs(held - 100) <= 2, 'keeps a reader who scrolled up in place: ' + held);
+  await wheelTo(1e7);
+  await grow(240);
+  assert.ok(await gap() <= 2, 'resumes following at the end: gap ' + (await gap()));
+  await js(`window.fixtureState.config.ui.followOutput=false`);
+  await grow(240);
+  assert.ok(await gap() >= 200, 'switched off, growth outside a repaint is not followed: gap ' + (await gap()));
+  console.log('PASS: the chat follows growth at its end, holds a reader who scrolled up, resumes at the end, and stays put when switched off.');
+  await server.close();
+  harness.finish();
+}).catch(async error => {
+  console.error(error);
+  await server?.close();
+  harness.onError(error);
+});

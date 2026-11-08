@@ -10,26 +10,28 @@ if (!process.versions.electron) {
   process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
   process.exit(result.status ?? 1);
 }
-const { app, BrowserWindow } = require('electron');
-app.whenReady().then(async () => {
-  const win = new BrowserWindow({ show: false, width: 1100, height: 900,
-    webPreferences: { offscreen: true, backgroundThrottling: false, partition: 'cos-overwrite-layout' } });
+const { createHarness } = require('./lib/ui-harness.cjs');
+const output = path.join(__dirname, '..', 'outputs/overwrite-layout');
+const harness = createHarness({ name: 'overwrite-layout', width: 1100, height: 900, output });
+harness.ready().then(async () => {
+  await harness.window({ webPreferences: { offscreen: true, backgroundThrottling: false, partition: 'cos-overwrite-layout' } });
+  const win = harness.win;
   const css = fs.readFileSync(path.join(__dirname, '../extension/overlay.css'), 'utf8');
   const adapter = fs.readFileSync(path.join(__dirname, '../extension/chatgpt-dom.js'), 'utf8');
-  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html><html data-clf-theme="dark"><style>
+  await harness.loadHtml(`<!doctype html><html data-clf-theme="dark"><style>
     body { background:#121212; color:#eee; font:16px/1.5 system-ui,sans-serif; margin:48px; }
     #thread { max-width:800px; } .markdown { margin:0; } .native-steps { display:flex; flex-direction:column; gap:32px; }
     .native-step { margin-bottom:24px; padding-bottom:8px; } .native-call { padding:16px 0; }
     .native-notification { padding:16px 0; min-height:48px; }
     .native-final { margin-top:24px; } button { color:inherit; background:transparent; border:0; font:inherit; }
     pre { border:1px solid #555; padding:12px; } ${css}
-    </style><main id="thread"></main></html>`));
-  await win.webContents.executeJavaScript(adapter);
+    </style><main id="thread"></main></html>`);
+  await harness.js(adapter);
   const measurements = [];
   for (const zoom of [1, 1.25]) {
     win.webContents.setZoomFactor(zoom);
     for (const width of [800, 480, 320]) for (const mode of ['open', 'clipped', 'unmounted']) {
-      const result = await win.webContents.executeJavaScript(`(() => {
+      const result = await harness.js(`(() => {
         const thread = document.getElementById('thread'); thread.replaceChildren(); thread.style.width = ${width} + 'px';
         const section = document.createElement('section');
         section.dataset.testid = 'conversation-turn-2'; section.dataset.turn = 'assistant'; section.dataset.turnId = 'layout-fixture';
@@ -110,12 +112,12 @@ app.whenReady().then(async () => {
       const destinationArg = process.argv.slice(2).find(arg => !arg.startsWith('--'));
       if (destinationArg && zoom === 1 && width === 800 && mode === 'open') {
         const destination = path.resolve(destinationArg); fs.mkdirSync(path.dirname(destination), { recursive: true });
-        await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+        await harness.js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
         fs.writeFileSync(destination, (await win.webContents.capturePage()).toPNG());
       }
     }
   }
   console.log(JSON.stringify(measurements));
   console.log('Overwrite layout passed: 18 native/projected states, hidden thinking notifications without empty slots, compact tool-to-interim gaps, details, native final and Off restoration.');
-  win.destroy(); app.exit(0);
-}).catch(error => { console.error(error); app.exit(1); });
+  harness.finish();
+}).catch(error => { console.error(error); harness.onError(error); });

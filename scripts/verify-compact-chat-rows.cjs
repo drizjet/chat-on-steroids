@@ -1,12 +1,19 @@
 // Real Electron/Chromium coverage for the existing Projects/Chats tree row density.
 // Uses synthetic local sessions only; does not touch the installed app or user data.
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = process.env.COS_UI_ROOT || path.resolve(__dirname, '..');
 const output = path.resolve(process.env.COS_UI_OUTPUT || path.join(root, '.tmp', 'compact-chat-rows'));
 const { fixtureConfigSource, BENIGN_RENDERER_ERRORS } = require(path.join(root, 'scripts/fixtures/app-defaults.cjs'));
 fs.mkdirSync(path.join(output, 'profile'), { recursive: true });
-app.setPath('userData', path.join(output, 'profile')); app.disableHardwareAcceleration();
+const harness = createHarness({ name: 'compact-chat-rows', width: 1280, height: 820, userData: path.join(output, 'profile'), output });
+harness.app.disableHardwareAcceleration();
 // A non-persistent, per-process partition prevents Chromium storage from leaking between runs.
 const fixturePartition = `compact-chat-rows-${process.pid}-${Date.now()}`;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -48,7 +55,7 @@ const fixture = `(() => {
   mode={theme,highContrast,fontSize,translucentSidebar,sidebarLayout,sidebarTint};const r=await methods.getState();f.emit('onStateChanged',r.data);
  };
 })();`;
-app.whenReady().then(async () => {
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   const iconRoot = fs.realpathSync(path.join(root, 'node_modules/@phosphor-icons/web/src'));
   server = await createServer({ configFile:false, root:path.join(root,'src/renderer'), cacheDir:path.join(output,'vite'), logLevel:'error',
@@ -60,7 +67,8 @@ app.whenReady().then(async () => {
         res.end(fixtureConfigSource()+fs.readFileSync(path.join(root,'scripts/fixtures/composer-ui.js'),'utf8')+fixture);
       });}}] });
   await server.listen();
-  win = new BrowserWindow({show:false,width:1280,height:820,webPreferences:{sandbox:true,offscreen:true,backgroundThrottling:false,partition:fixturePartition}});
+  await harness.window({ webPreferences: { sandbox:true, offscreen:true, backgroundThrottling:false, partition:fixturePartition } });
+  win = harness.win;
   const errors=[];
   win.webContents.on('console-message',e=>{if(e.level==='error'&&!BENIGN_RENDERER_ERRORS.includes(e.message))errors.push(e.message);});
   const js=code=>win.webContents.executeJavaScript(code);
@@ -69,7 +77,7 @@ app.whenReady().then(async () => {
   const capture=async name=>{await settle();fs.mkdirSync(output,{recursive:true});fs.writeFileSync(path.join(output,name),(await win.webContents.capturePage()).toPNG());};
   const key=async name=>{win.webContents.sendInputEvent({type:'keyDown',keyCode:name});win.webContents.sendInputEvent({type:'keyUp',keyCode:name});await pause(100);};
   const pointerAway=async()=>{win.webContents.sendInputEvent({type:'mouseMove',x:600,y:300});await pause(180);};
-  await win.loadURL(server.resolvedUrls.local[0]);
+  await harness.loadUrl(server.resolvedUrls.local[0]);
   await until(`document.querySelectorAll('#sessionList:not(.is-inbox) .sess[data-id]').length===6`);
   // Open the synthetic project so both project-owned and unfiled chat rows are measured.
   await js(`document.querySelector('#projectList .project-heading')?.click()`);
@@ -301,9 +309,10 @@ app.whenReady().then(async () => {
   assert.equal(await js(`window.__compactTargetRow().querySelector('.row-menu-button').getAttribute('aria-expanded')`),'true');
   assert.deepEqual(errors,[],'No unexpected renderer console errors');
   console.log('PASS visible keyboard focus, hover action reveal, Space selection, row menu, and no renderer console errors');
-  win.destroy();await server.close();app.exit(0);
+  await server.close();
+  harness.finish();
 }).catch(async error=>{
   fs.mkdirSync(output,{recursive:true});
   if(win&&!win.isDestroyed())try{fs.writeFileSync(path.join(output,'failure.png'),(await win.webContents.capturePage()).toPNG());}catch{}
-  console.error(error);try{win?.destroy();}catch{}try{await server?.close();}catch{}app.exit(1);
+  console.error(error);try{win?.destroy();}catch{}try{await server?.close();}catch{}harness.onError(error);
 });

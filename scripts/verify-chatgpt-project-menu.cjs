@@ -8,15 +8,15 @@ if (!process.versions.electron) {
   process.exit(result.status ?? 1);
 }
 const { withoutScripts } = require('./ui-check-page.cjs');
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = path.resolve(__dirname, '..');
 const { fixtureConfigSource } = require('./fixtures/app-defaults.cjs');
 const output = path.join(root, 'outputs/chatgpt-project-menu');
-app.setPath('userData', path.join(output, 'runtime'));
-app.whenReady().then(async () => {
+const harness = createHarness({ name: 'chatgpt-project-menu', width: 1100, height: 760, userData: path.join(output, 'runtime'), output });
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   const fixture = `
     if (new URL(location.href).searchParams.has('reset')) { localStorage.removeItem('chat-on-steroids.sidebar-order'); localStorage.removeItem('chat-on-steroids.sidebar-pins'); }
@@ -68,18 +68,18 @@ app.whenReady().then(async () => {
         response.setHeader('Content-Type','text/html'); response.end(await vite.transformIndexHtml('/fixture.html',source));
       });
     }}] });
-  let win;
   try {
     await server.listen(); fs.mkdirSync(output,{recursive:true});
-    win = new BrowserWindow({show:false,width:1100,height:760,webPreferences:{sandbox:true,backgroundThrottling:false}});
-    const js = code=>win.webContents.executeJavaScript(code);
+    await harness.window({ webPreferences: { sandbox: true, backgroundThrottling: false, offscreen: false } });
+    const win = harness.win;
+    const js = code=>harness.js(code);
     const until = async (code, message) => {
-      for (let i=0;i<200;i++) { if (await js(code)) return; await new Promise(r=>setTimeout(r,15)); }
+      for (let i=0;i<200;i++) { if (await js(code)) return; await harness.pause(15); }
       assert.fail(message + ' — ' + code);
     };
     const screenshot = async (name, box) => {
       await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
-      await new Promise(r=>setTimeout(r,200));
+      await harness.pause(200);
       fs.writeFileSync(path.join(output,name),(await win.webContents.capturePage(box,{stayHidden:true,stayAwake:true})).toPNG());
     };
     const linked = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1';
@@ -98,7 +98,7 @@ app.whenReady().then(async () => {
         box:{x:Math.max(0,Math.floor(r.left)-16),y:Math.max(0,Math.floor(r.top)-16),width:Math.ceil(r.width)+32,height:Math.ceil(r.height)+32} }; })()`;
     const results = {};
     for (const theme of ['dark','light']) {
-      await win.loadURL(server.resolvedUrls.local[0]+'fixture.html?reset=1&theme='+theme);
+      await harness.loadUrl(server.resolvedUrls.local[0]+'fixture.html?reset=1&theme='+theme);
       await until('!!window.fixtureReady && document.querySelectorAll(".project-group").length === 2', 'fixture');
       await js(`Promise.all(['CoS Phosphor','CoS Phosphor Fill'].map(name=>document.fonts.load('16px "'+name+'"')))`);
       await openMenu();
@@ -134,5 +134,6 @@ app.whenReady().then(async () => {
     }
     console.log('Passed: a linked project\'s menu offers Change and Unlink (both themes), the picker shows the current Project chosen with a new one first, and Unlink keeps the Project in ChatGPT.');
     fs.writeFileSync(path.join(output,'measurements.json'), JSON.stringify(results,null,2));
-  } finally { win?.destroy(); await server.close(); app.quit(); }
-}).catch(error=>{console.error(error);app.exit(1)});
+  } finally { await server.close(); }
+  harness.finish();
+}).catch(error=>{console.error(error);harness.onError(error)});

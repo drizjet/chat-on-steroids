@@ -11,9 +11,11 @@ if (!process.versions.electron) {
   const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
   process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || ''); process.exit(result.status ?? 1);
 }
-const { app, BrowserWindow } = require('electron');
-app.whenReady().then(async () => {
-  const root = path.join(__dirname, '..'), output = path.join(root, 'outputs/chatgpt-project-picker');
+const { createHarness } = require('./lib/ui-harness.cjs');
+const root = path.join(__dirname, '..');
+const output = path.join(root, 'outputs/chatgpt-project-picker');
+const harness = createHarness({ name: 'chatgpt-project-picker', width: 1100, height: 760, output });
+harness.ready().then(async () => {
   fs.mkdirSync(output, { recursive: true });
   const code = (await require('esbuild').build({ stdin: { contents: `
       export { createChatgptProjectPicker } from './src/renderer/chatgpt-project-picker.ts';
@@ -27,12 +29,12 @@ app.whenReady().then(async () => {
   const css = icons + fs.readFileSync(path.join(root, 'src/renderer/styles.css'), 'utf8');
   const html = withoutScripts(fs.readFileSync(path.join(root, 'src/renderer/index.html'), 'utf8')).replace(/<link\b[^>]*>/g, '')
     .replace('</head>', `<style>${css}</style></head>`);
-  const win = new BrowserWindow({ show: false, width: 1100, height: 760, webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
-  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  const win = await harness.window({ webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
+  await harness.loadHtml(html);
   win.webContents.on('console-message', (_e, _l, message) => { if (/error|Error/.test(message)) console.error('renderer:', message); });
-  await win.webContents.executeJavaScript(code);
-  await win.webContents.executeJavaScript('picker.initLanguage(); true');
-  const open = async (language) => win.webContents.executeJavaScript(`(async()=>{
+  await harness.js(code);
+  await harness.js('picker.initLanguage(); true');
+  const open = async (language) => harness.js(`(async()=>{
     document.querySelectorAll('.file-branch-menu').forEach(n => n.remove());
     picker.setLanguage(${JSON.stringify(language)});
     let anchor = document.getElementById('fixture-anchor');
@@ -85,17 +87,17 @@ app.whenReady().then(async () => {
     for (const [width, zoom] of language === 'en' || language === 'de' ? [[1100, 1], [720, 1], [1100, 1.5]] : [[1100, 1]]) {
       // A resize closes the popover (as in the app), so it opens again at each size.
       win.setContentSize(width, 760); win.webContents.setZoomFactor(zoom);
-      await new Promise(r => setTimeout(r, 120));
+      await harness.pause(120);
       await open(language);
-      const result = await win.webContents.executeJavaScript(measure);
+      const result = await harness.js(measure);
       results.push({ language, width, zoom, ...result });
       if (width === 1100 && zoom === 1) fs.writeFileSync(path.join(output, `picker-${language}.png`), (await win.webContents.capturePage({ x: 0, y: 80, width: 380, height: 360 })).toPNG());
       if (width === 1100 && zoom === 1) {
-        const state = await win.webContents.executeJavaScript(empty);
+        const state = await harness.js(empty);
         assert.ok(state.lines <= 2 && !state.cut && state.inside, 'the empty projects line is whole, in at most two lines: ' + JSON.stringify({ language, ...state }));
         fs.writeFileSync(path.join(output, `projects-empty-${language}.png`), (await win.webContents.capturePage(state.box)).toPNG());
         results.push({ language, emptyState: state });
-        await win.webContents.executeJavaScript(`document.getElementById('projectList').hidden = false; document.getElementById('projectsEmpty').hidden = true; true`);
+        await harness.js(`document.getElementById('projectList').hidden = false; document.getElementById('projectsEmpty').hidden = true; true`);
       }
       assert.ok(result.inside, JSON.stringify({ language, width, zoom, ...result }));
       assert.equal(result.optionHeights.length, 1, 'rows have one height: ' + JSON.stringify(result.optionHeights));
@@ -108,5 +110,5 @@ app.whenReady().then(async () => {
   }
   fs.writeFileSync(path.join(output, 'measurements.json'), JSON.stringify(results, null, 2));
   console.log('Passed: the ChatGPT Project picker keeps one left edge, one row height and a whole one-line note in all 13 languages (English and German also narrow and zoomed), and the empty Projects line is whole.');
-  win.destroy(); app.exit(0);
-}).catch(error => { console.error(error); app.exit(1); });
+  harness.finish();
+}).catch(error => { console.error(error); harness.onError(error); });

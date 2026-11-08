@@ -1,12 +1,18 @@
 // Production renderer and real Chromium layout/input; synthetic conversations only.
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
 const root = process.env.COS_UI_ROOT || path.resolve(__dirname, '..');
 const output = path.resolve(process.env.COS_UI_OUTPUT || path.join(root, '.tmp', 'round-subagents'));
 const { fixtureConfigSource, BENIGN_RENDERER_ERRORS } = require(path.join(root, 'scripts/fixtures/app-defaults.cjs'));
-app.setPath('userData', path.join(output, 'profile')); app.disableHardwareAcceleration();
-const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-let server, win;
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
+const harness = createHarness({ name: 'round-subagents', width: 1440, height: 1200, userData: path.join(output, 'profile'), output, ignoreErrors: BENIGN_RENDERER_ERRORS });
+harness.app.disableHardwareAcceleration();
+let server;
 const fixture = `(() => {
  const old=window.api,f=composerFixture,now=Date.now(),ok=data=>Promise.resolve({ok:true,data:structuredClone(data)});
  const stored=text=>({text,chars:text.length,truncated:false});
@@ -60,7 +66,7 @@ const fixture = `(() => {
  };
  window.api=new Proxy(methods,{get:(target,key)=>key in target?target[key]:old[key]});
 })();`;
-app.whenReady().then(async () => {
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   server = await createServer({ configFile:false, root:path.join(root,'src/renderer'), cacheDir:path.join(output,'vite'), logLevel:'error',
     resolve:{alias:{'@phosphor-icons/web':path.join(root,'node_modules/@phosphor-icons/web/src')}},
@@ -68,14 +74,15 @@ app.whenReady().then(async () => {
     plugins:[{name:'round-workers-fixture',transformIndexHtml:html=>html.replace('</head>','<script src="/timeline-fixture.js"></script></head>'),
       configureServer(vite){vite.middlewares.use((req,res,next)=>{if(req.url!=='/timeline-fixture.js')return next();res.setHeader('Content-Type','text/javascript');res.end(fixtureConfigSource()+fs.readFileSync(path.join(root,'scripts/fixtures/composer-ui.js'),'utf8')+fixture);});}}] });
   await server.listen();
-  win = new BrowserWindow({show:false,width:1440,height:1200,webPreferences:{sandbox:true,offscreen:true,backgroundThrottling:false}});
+  await harness.window({ webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
+  const win = harness.win;
   const errors=[];
   win.webContents.on('console-message',e=>{if(e.level==='error'&&!BENIGN_RENDERER_ERRORS.includes(e.message))errors.push(e.message);});
-  const js=code=>win.webContents.executeJavaScript(code);
-  const until=async expression=>{for(const deadline=Date.now()+15000;Date.now()<deadline;){if(await js(expression))return;await pause(40);}throw new Error('Timed out: '+expression+'; '+JSON.stringify(await js(`({focus:document.activeElement?.outerHTML,panels:[...document.querySelectorAll('.agent-panel')].map(p=>({hidden:p.hidden,rows:p.querySelectorAll('.agent-panel-row').length})),errors:document.body.textContent.slice(-300)})`))); };
-  const settle=async()=>{await js(`document.getAnimations().forEach(a=>{if(a.effect.getTiming().iterations!==Infinity)a.finish()})`);await pause(180);};
+  const js=code=>harness.js(code);
+  const until=async expression=>{for(const deadline=Date.now()+15000;Date.now()<deadline;){if(await js(expression))return;await harness.pause(40);}throw new Error('Timed out: '+expression+'; '+JSON.stringify(await js(`({focus:document.activeElement?.outerHTML,panels:[...document.querySelectorAll('.agent-panel')].map(p=>({hidden:p.hidden,rows:p.querySelectorAll('.agent-panel-row').length})),errors:document.body.textContent.slice(-300)})`))); };
+  const settle=async()=>{await js(`document.getAnimations().forEach(a=>{if(a.effect.getTiming().iterations!==Infinity)a.finish()})`);await harness.pause(180);};
   const capture=async name=>{await settle();fs.mkdirSync(output,{recursive:true});fs.writeFileSync(path.join(output,name),(await win.webContents.capturePage()).toPNG());};
-  await win.loadURL(server.resolvedUrls.local[0]);
+  await harness.loadUrl(server.resolvedUrls.local[0]);
   await until(`!!document.querySelector('#sessionList [data-id="composer-preview"]')`);
   await js(`document.querySelector('#sessionList [data-id="composer-preview"]').click()`);
   await until(`document.querySelectorAll('#timeline .activity-workers:not([hidden])').length===3`);
@@ -87,7 +94,7 @@ app.whenReady().then(async () => {
     document.querySelector('#timeline .tool-group').open=true;document.getElementById('chatBody').scrollTop=0`);
   await capture('after-timeline.png');
   assert.equal(await js(`getComputedStyle(document.querySelector('#timeline .activity-workers')).display`),'none','Indicators appear only on collapsed rounds');
-  win.show(); win.focus(); win.webContents.focus(); await pause(100);
+  win.show(); win.focus(); win.webContents.focus(); await harness.pause(100);
   await js(`document.querySelectorAll('#timeline .activity-workers')[2].scrollIntoView({block:'nearest'});document.querySelectorAll('#timeline .activity-workers')[2].focus({preventScroll:true})`);
   await settle();
   const readerTop=await js(`document.getElementById('chatBody').scrollTop`);
@@ -131,10 +138,10 @@ app.whenReady().then(async () => {
   const arrow=`document.querySelector('#sessionList .sess[data-id="composer-preview"] > .worker-toggle')`;
   const arrowX=()=>js(`Math.round(new DOMMatrix(getComputedStyle(${arrow}).transform).m41)`);
   const rowPoint=await js(`(()=>{const r=${arrow}.parentElement.getBoundingClientRect();return {x:Math.round(r.left+r.width/3),y:Math.round(r.top+r.height/2)}})()`);
-  win.webContents.sendInputEvent({type:'mouseMove',...rowPoint}); await pause(150); await settle();
+  win.webContents.sendInputEvent({type:'mouseMove',...rowPoint}); await harness.pause(150); await settle();
   // Hovered, the arrow has slid aside: aim at where it is now.
   const arrowPoint=await js(`(()=>{const r=${arrow}.getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()`);
-  win.webContents.sendInputEvent({type:'mouseMove',...arrowPoint}); await pause(150);
+  win.webContents.sendInputEvent({type:'mouseMove',...arrowPoint}); await harness.pause(150);
   // Its tooltip is the same one throughout: a repaint does not blink it away and back.
   await until(`!!document.getElementById('sessionTooltip')`);
   await js(`window.tipsMade=0;new MutationObserver(ms=>{for(const m of ms)for(const n of m.addedNodes)if(n.id==='sessionTooltip')window.tipsMade++;}).observe(document.body,{childList:true})`);
@@ -145,7 +152,7 @@ app.whenReady().then(async () => {
     await until(`${arrow}.getAttribute('aria-expanded')==='${expanded}'`);
     assert.equal(await arrowX(),before,'The arrow keeps its place through the repaint ('+expanded+')');
   }
-  await pause(200);
+  await harness.pause(200);
   assert.deepEqual(await js(`({made:window.tipsMade,shown:!!document.getElementById('sessionTooltip')})`),{made:0,shown:true},'The tooltip stays through the repaints');
   win.webContents.sendInputEvent({type:'mouseMove',x:900,y:600});
   await until(`!document.querySelector('#sessionList .sess.is-pointed')`); await settle();
@@ -157,5 +164,12 @@ app.whenReady().then(async () => {
   await capture('after-narrow.png');
   assert.deepEqual(errors,[]);
   console.log('PASS: round counts, keyboard activation, dock highlights, lazy history, live output, refresh and narrow layout');
-  win.destroy();await server.close();app.exit(0);
-}).catch(async error=>{fs.mkdirSync(output,{recursive:true});if(win&&!win.isDestroyed())fs.writeFileSync(path.join(output,'failure.png'),(await win.webContents.capturePage()).toPNG());console.error(error);await server?.close();app.exit(1);});
+  await server.close();
+  harness.finish();
+}).catch(async error=>{
+  fs.mkdirSync(output,{recursive:true});
+  if(harness.win&&!harness.win.isDestroyed()){try{fs.writeFileSync(path.join(output,'failure.png'),(await harness.win.webContents.capturePage()).toPNG());}catch{}}
+  console.error(error);
+  await server?.close();
+  harness.onError(error);
+});

@@ -1,17 +1,23 @@
 // Production renderer in isolated Electron; synthetic evidence, no installed app or provider.
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename, ...process.argv.slice(2)], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const { fixtureConfigSource } = require('./fixtures/app-defaults.cjs');
 const root = path.resolve(__dirname, '..');
 const version = require('../package.json').version;
 const built = path.join(root, 'out/renderer');
 const output = path.join(root, 'outputs/update-readiness');
 const before = process.argv.includes('--before');
-app.setPath('userData', path.join(output, 'runtime'));
-app.whenReady().then(async () => {
+const harness = createHarness({ name: 'update-readiness', width: 1100, height: 850, userData: path.join(output, 'runtime'), output });
+harness.ready().then(async () => {
   const fixture = `${fixtureConfigSource()}
     const p = new URLSearchParams(location.search);
     localStorage.setItem('cos.ui.language', p.get('lang') || 'en');
@@ -48,23 +54,23 @@ app.whenReady().then(async () => {
     const data = fs.readFileSync(file);
     response.end(path.extname(file) === '.html' ? data.toString().replace('<head>','<head><script src="/fixture.js"></script>') : data);
   });
-  let win;
   try {
     await new Promise(resolve => server.listen(0,'127.0.0.1',resolve)); fs.mkdirSync(output,{recursive:true});
-    win = new BrowserWindow({show:false,width:1100,height:850,webPreferences:{offscreen:true,sandbox:true}});
+    await harness.window({ webPreferences: { offscreen: true, sandbox: true } });
+    const win = harness.win;
     const errors = [];
     win.webContents.on('console-message', event => { if (event.level === 'error' && !event.message.includes('ResizeObserver loop')) errors.push(event.message); });
-    const js = expression => win.webContents.executeJavaScript(expression);
-    const pause = ms => new Promise(resolve => setTimeout(resolve,ms));
+    const js = expression => harness.js(expression);
+    const pause = ms => harness.pause(ms);
     const until = async expression => { const end=Date.now()+8000; while(Date.now()<end) { if(await js(expression)) return; await pause(40); } throw new Error('Timeout: '+expression); };
     const open = async query => {
-      await win.loadURL('http://127.0.0.1:'+server.address().port+'/?'+query);
+      await harness.loadUrl('http://127.0.0.1:'+server.address().port+'/?'+query);
       await until(`document.getElementById('versionLine').textContent.length>0`);
       await js(`document.querySelector('#tabs [data-tab="activity"]').click()`); await pause(400);
       await until(`!document.querySelector('.toast')`);
     };
     const shot = async name => fs.writeFileSync(path.join(output,name),(await win.webContents.capturePage()).toPNG());
-    if (before) { await open(''); await shot('before.png'); return; }
+    if (before) { await open(''); await shot('before.png'); harness.finish(); return; }
     for (const lang of ['en','ja','de']) for (const theme of ['dark','light']) {
       await open('lang='+lang+'&theme='+theme);
       await until(`document.getElementById('updateReadinessSummary').dataset.ready==='true'`);
@@ -317,5 +323,6 @@ app.whenReady().then(async () => {
     }
     assert.deepEqual(errors,[],'No production renderer errors');
     console.log('PASS: production update status, proofs, transitions, keyboard action, read-only pushes, persistent reply/IPC failures and explicit retry; all 13 locales at 700x600 and 18px, translated recovery guidance and diagnostics action outside collapsed details');
-  } finally { win?.destroy(); await new Promise(resolve=>server.close(resolve)); app.quit(); }
-}).catch(error=>{ console.error(error); app.exit(1); });
+  } finally { await new Promise(resolve=>server.close(resolve)); }
+  harness.finish();
+}).catch(error=>{ console.error(error); harness.onError(error); });

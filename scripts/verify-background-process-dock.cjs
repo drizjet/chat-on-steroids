@@ -13,11 +13,12 @@ if (!process.versions.electron) {
   process.exit(result.status ?? 1);
 }
 
-const { app, BrowserWindow } = require('electron');
+const { createHarness } = require('./lib/ui-harness.cjs');
+const root = path.join(__dirname, '..');
+const output = path.join(root, 'outputs/background-process-dock');
+const harness = createHarness({ name: 'background-process-dock', width: 1100, height: 800, output });
 
-app.whenReady().then(async () => {
-  const root = path.join(__dirname, '..');
-  const output = path.join(root, 'outputs/background-process-dock');
+harness.ready().then(async () => {
   fs.mkdirSync(output, { recursive: true });
   const code = (await require('esbuild').build({
     entryPoints: [path.join(root, 'src/renderer/chat.ts')], bundle: true, write: false,
@@ -34,11 +35,10 @@ app.whenReady().then(async () => {
     .replace('    <link rel="stylesheet" href="./settings.css" />\n', '')
     .replace('    <script type="module" src="./main.ts"></script>\n', '')
     .replace('</head>', `<style>${css}</style></head>`);
-  const win = new BrowserWindow({ show: false, width: 1100, height: 800,
-    webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
-  try {
-    await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
-    await win.webContents.executeJavaScript(`(() => {
+  await harness.window({ webPreferences: { sandbox: true, offscreen: true, backgroundThrottling: false } });
+  const win = harness.win;
+  await harness.loadHtml(html);
+  await harness.js(`(() => {
       const ok = data => Promise.resolve({ok:true,data});
       const base = (id,title,conversationId) => ({id,title,conversationId,chatIds:[conversationId],startedAt:1,updatedAt:Date.now(),endedAt:null,
         events:0,userMessages:0,toolCalls:0,lastToolCallAt:null,processExitNonzero:0,toolRejected:0,toolInternalErrors:0,errors:0,
@@ -79,105 +79,103 @@ app.whenReady().then(async () => {
       live.publishSession=()=>{for(const listener of live.sessionListeners)listener({allTranscripts:true})};
       window.frame=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
     })()`);
-    await win.webContents.executeJavaScript(code);
-    const js = source => win.webContents.executeJavaScript(source);
-    const wait = async (condition, detail = '') => {
-      for (let i = 0; i < 200; i++) {
-        if (await js(condition)) return;
-        await new Promise(resolve => setTimeout(resolve, 25));
-      }
-      throw new Error('Renderer condition timed out: ' + condition + ' ' + detail);
-    };
-    await js(`chat.initChat({state:()=>null,save:async()=>{}});chat.chatVisible(true);`);
-    await wait('!!document.querySelector("#sessionList [data-id=\\"process-a\\"]")');
-    await js(`document.querySelector('#sessionList [data-id="process-a"]').click()`);
-    await wait('!document.getElementById("backgroundExecStatus").hidden && !document.getElementById("finishQueue").hidden');
-
-    // One process: exact command is in the tooltip while the visible line stays compact.
-    let one = await js(`(() => {const row=document.getElementById('backgroundExecStatus'),label=row.querySelector('.queue-label'),stop=row.querySelector('.background-exec-stop');
-      return {label:label.textContent,title:row.title,time:row.querySelector('.background-exec-time').textContent,stop:stop.textContent,stopTitle:stop.title};})()`);
-    assert.match(one.label, /^Background process running · node -e /); assert.match(one.title, /^#7001 node -e /);
-    assert.match(one.time, /^Running for 1m \d+s$/); assert.equal(one.stop.trim(), 'Stop'); assert.equal(one.stopTitle, 'Stop background process');
-    // The elapsed label may update, but the native hover tooltip must remain byte-for-byte stable
-    // so Chromium does not dismiss/reopen it once per second.
-    await wait(`document.querySelector('#backgroundExecStatus .background-exec-time').textContent!==${JSON.stringify(one.time)}`);
-    const afterTick = await js(`({title:document.getElementById('backgroundExecStatus').title,time:document.querySelector('#backgroundExecStatus .background-exec-time').textContent})`);
-    assert.equal(afterTick.title, one.title); assert.notEqual(afterTick.time, one.time);
-
-    // Switching chats never leaks A's process into B; switching back restores A from the manager projection.
-    await js(`document.querySelector('#sessionList [data-id="process-b"]').click()`);
-    await wait('document.getElementById("backgroundExecStatus").hidden');
-    await js(`document.querySelector('#sessionList [data-id="process-a"]').click()`);
-    await wait('!document.getElementById("backgroundExecStatus").hidden');
-
-    // Multiple live children collapse into one row, then expand into individually actionable rows.
-    await js(`processFixture.processes['process-a'].push({processId:7002,incarnation:102,command:'npm run watch',startedAt:Date.now()-20_000,tty:true});processFixture.publishBackground()`);
-    await wait('document.querySelector("#backgroundExecStatus .queue-label").textContent.startsWith("2 background processes running")');
-    const multiple = await js(`({label:document.querySelector('#backgroundExecStatus .queue-label').textContent,title:document.getElementById('backgroundExecStatus').title,expanded:document.getElementById('backgroundExecStatus').getAttribute('aria-expanded'),listHidden:document.getElementById('backgroundExecList').hidden,summaryStopHidden:document.querySelector('#backgroundExecStatus .background-exec-stop').hidden})`);
-    assert.equal(multiple.label, '2 background processes running');
-    assert.match(multiple.title, /#7001 /); assert.match(multiple.title, /#7002 npm run watch/);
-    assert.equal(multiple.expanded, 'false'); assert.equal(multiple.listHidden, true); assert.equal(multiple.summaryStopHidden, true);
-    await js(`document.getElementById('backgroundExecStatus').click()`);
-    await wait('document.getElementById("backgroundExecStatus").getAttribute("aria-expanded")==="true" && !document.getElementById("backgroundExecList").hidden && document.querySelectorAll("#backgroundExecList .background-exec-process").length===2');
-    const expanded = await js(`[...document.querySelectorAll('#backgroundExecList .background-exec-process')].map(row=>({text:row.textContent,title:row.title,id:row.dataset.processId,incarnation:row.dataset.incarnation}))`);
-    assert.equal(expanded.length, 2); assert.match(expanded[0].text, /#7001 /); assert.match(expanded[1].text, /#7002 npm run watch/);
-
-    // Each expanded row targets exactly the child it represents. Stop the newer child and keep the oldest one live.
-    await js(`document.querySelectorAll('#backgroundExecList .background-exec-stop')[1].click()`);
-    await wait('processFixture.stopCalls.length===1 && document.querySelector("#backgroundExecStatus .queue-label").textContent.startsWith("Background process running")');
-    assert.deepEqual(await js('processFixture.stopCalls[0]'), {id:'process-a',processId:7002,incarnation:102});
-    assert.match(await js('document.getElementById("backgroundExecStatus").title'), /#7001 /);
-
-    // A child exiting without a tool call publishes lifecycle state and removes the persistent row.
-    await js(`processFixture.processes['process-a']=[];processFixture.publishBackground()`);
-    await wait('document.getElementById("backgroundExecStatus").hidden');
-    await js(`processFixture.processes['process-a']=[
-      {processId:7003,incarnation:103,command:'npm run dev -- --fixture-with-a-long-background-command-that-must-ellipsis-cleanly',startedAt:Date.now()-65_000,tty:false},
-      {processId:7004,incarnation:104,command:'npm run watch',startedAt:Date.now()-20_000,tty:true},
-      {processId:7005,incarnation:105,command:'node scripts/background-worker.js --fixture',startedAt:Date.now()-8_000,tty:false},
-      {processId:7006,incarnation:106,command:'node scripts/background-worker-two.js --fixture',startedAt:Date.now()-4_000,tty:false}
-    ];processFixture.publishBackground()`);
-    await wait('document.querySelector("#backgroundExecStatus .queue-label").textContent==="4 background processes running"');
-    await js(`document.getElementById('backgroundExecStatus').click()`);
-    await wait('!document.getElementById("backgroundExecList").hidden && document.querySelectorAll("#backgroundExecList .background-exec-process").length===4');
-
-    // Stress the real dock occupants at wide/narrow sizes and zoom. The queue alone scrolls;
-    // the process row, Stop action, recovery/Goal statuses and composer remain reachable.
-    await wait('!document.getElementById("agentPlan").hidden && !document.getElementById("recoveryStatus").hidden && !document.getElementById("activeGoalRow").hidden');
-    await js(`document.querySelector('#agentPlan .agent-plan-heading').click();`);
-    const cases = [
-      {width:1100,height:800,zoom:1,theme:'dark',file:'wide-dark'},
-      {width:640,height:800,zoom:1,theme:'light',file:'narrow-light'},
-      {width:640,height:800,zoom:1.5,theme:'dark',file:'narrow-zoom'},
-      {width:420,height:800,zoom:1,theme:'dark',file:'phone-width'}
-    ];
-    const measurements = [];
-    for (const sample of cases) {
-      // Reset zoom before sizing: changing the content size while the previous case is still at
-      // 150% makes Electron preserve that effective CSS viewport for the next measurement.
-      win.webContents.setZoomFactor(sample.zoom); win.setContentSize(sample.width, sample.height);
-      await js(`document.documentElement.dataset.theme=${JSON.stringify(sample.theme)};frame()`);
-      const measured = await js(`(() => {
-        const dock=document.getElementById('composerDock'),proc=document.getElementById('backgroundExecStatus'),list=document.getElementById('backgroundExecList'),queue=document.getElementById('finishQueue'),composer=document.getElementById('composer');
-        const stop=proc.querySelector('.background-exec-stop'),time=proc.querySelector('.background-exec-time');
-        const itemStops=[...list.querySelectorAll('.background-exec-stop')].map(node=>node.getBoundingClientRect()),d=dock.getBoundingClientRect(),p=proc.getBoundingClientRect(),l=list.getBoundingClientRect(),s=stop.getBoundingClientRect(),t=time.getBoundingClientRect(),c=composer.getBoundingClientRect();
-        return {viewport:[innerWidth,innerHeight],dock:[d.left,d.right,d.top,d.bottom],process:[p.left,p.right,p.top,p.bottom],list:[l.left,l.right,l.top,l.bottom],stop:[s.left,s.right],time:[t.left,t.right],composer:[c.top,c.bottom],
-          queueClient:queue.clientHeight,queueScroll:queue.scrollHeight,queueOverflow:getComputedStyle(queue).overflowY,
-          timeVisible:t.width>0,
-          fits:d.left>=0&&d.right<=innerWidth+1&&p.left>=d.left-1&&p.right<=d.right+1&&l.left>=d.left-1&&l.right<=d.right+1&&(!t.width||(t.left>=d.left&&t.right<=d.right))&&itemStops.every(rect=>rect.left>=d.left&&rect.right<=d.right)&&proc.scrollWidth<=proc.clientWidth+1&&list.scrollWidth<=list.clientWidth+1,
-          processVisible:!proc.hidden&&p.height>0,listVisible:!list.hidden&&l.height>0,queueVisible:!queue.hidden&&queue.clientHeight>0,composerVisible:c.top<innerHeight&&c.bottom>0,error:window.fixtureError||null};
-      })()`);
-      assert.equal(measured.error, null, JSON.stringify({sample,measured})); assert.ok(measured.fits, JSON.stringify({sample,measured}));
-      assert.ok(measured.processVisible && measured.listVisible && measured.queueVisible && measured.composerVisible, JSON.stringify({sample,measured}));
-      assert.equal(measured.queueOverflow, 'auto'); assert.ok(measured.queueScroll > measured.queueClient, JSON.stringify({sample,measured}));
-      assert.ok(measured.queueClient <= 241, JSON.stringify({sample,measured}));
-      if (measured.viewport[0] <= 480) assert.equal(measured.timeVisible, false, JSON.stringify({sample,measured}));
-      measurements.push({sample,...measured});
-      await js('frame()'); fs.writeFileSync(path.join(output, sample.file+'.png'), (await win.webContents.capturePage()).toPNG());
+  await harness.js(code);
+  const js = source => harness.js(source);
+  const wait = async (condition, detail = '') => {
+    for (let i = 0; i < 200; i++) {
+      if (await js(condition)) return;
+      await harness.pause(25);
     }
-    fs.writeFileSync(path.join(output, 'measurements.json'), JSON.stringify(measurements, null, 2));
-    console.log(`Passed background-process dock lifecycle, isolation, Stop and ${cases.length} geometry cases. Screenshots: ${output}`);
-  } finally {
-    win.destroy(); app.quit();
+    throw new Error('Renderer condition timed out: ' + condition + ' ' + detail);
+  };
+  await js(`chat.initChat({state:()=>null,save:async()=>{}});chat.chatVisible(true);`);
+  await wait('!!document.querySelector("#sessionList [data-id=\\"process-a\\"]")');
+  await js(`document.querySelector('#sessionList [data-id="process-a"]').click()`);
+  await wait('!document.getElementById("backgroundExecStatus").hidden && !document.getElementById("finishQueue").hidden');
+
+  // One process: exact command is in the tooltip while the visible line stays compact.
+  let one = await js(`(() => {const row=document.getElementById('backgroundExecStatus'),label=row.querySelector('.queue-label'),stop=row.querySelector('.background-exec-stop');
+    return {label:label.textContent,title:row.title,time:row.querySelector('.background-exec-time').textContent,stop:stop.textContent,stopTitle:stop.title};})()`);
+  assert.match(one.label, /^Background process running · node -e /); assert.match(one.title, /^#7001 node -e /);
+  assert.match(one.time, /^Running for 1m \d+s$/); assert.equal(one.stop.trim(), 'Stop'); assert.equal(one.stopTitle, 'Stop background process');
+  // The elapsed label may update, but the native hover tooltip must remain byte-for-byte stable
+  // so Chromium does not dismiss/reopen it once per second.
+  await wait(`document.querySelector('#backgroundExecStatus .background-exec-time').textContent!==${JSON.stringify(one.time)}`);
+  const afterTick = await js(`({title:document.getElementById('backgroundExecStatus').title,time:document.querySelector('#backgroundExecStatus .background-exec-time').textContent})`);
+  assert.equal(afterTick.title, one.title); assert.notEqual(afterTick.time, one.time);
+
+  // Switching chats never leaks A's process into B; switching back restores A from the manager projection.
+  await js(`document.querySelector('#sessionList [data-id="process-b"]').click()`);
+  await wait('document.getElementById("backgroundExecStatus").hidden');
+  await js(`document.querySelector('#sessionList [data-id="process-a"]').click()`);
+  await wait('!document.getElementById("backgroundExecStatus").hidden');
+
+  // Multiple live children collapse into one row, then expand into individually actionable rows.
+  await js(`processFixture.processes['process-a'].push({processId:7002,incarnation:102,command:'npm run watch',startedAt:Date.now()-20_000,tty:true});processFixture.publishBackground()`);
+  await wait('document.querySelector("#backgroundExecStatus .queue-label").textContent.startsWith("2 background processes running")');
+  const multiple = await js(`({label:document.querySelector('#backgroundExecStatus .queue-label').textContent,title:document.getElementById('backgroundExecStatus').title,expanded:document.getElementById('backgroundExecStatus').getAttribute('aria-expanded'),listHidden:document.getElementById('backgroundExecList').hidden,summaryStopHidden:document.querySelector('#backgroundExecStatus .background-exec-stop').hidden})`);
+  assert.equal(multiple.label, '2 background processes running');
+  assert.match(multiple.title, /#7001 /); assert.match(multiple.title, /#7002 npm run watch/);
+  assert.equal(multiple.expanded, 'false'); assert.equal(multiple.listHidden, true); assert.equal(multiple.summaryStopHidden, true);
+  await js(`document.getElementById('backgroundExecStatus').click()`);
+  await wait('document.getElementById("backgroundExecStatus").getAttribute("aria-expanded")==="true" && !document.getElementById("backgroundExecList").hidden && document.querySelectorAll("#backgroundExecList .background-exec-process").length===2');
+  const expanded = await js(`[...document.querySelectorAll('#backgroundExecList .background-exec-process')].map(row=>({text:row.textContent,title:row.title,id:row.dataset.processId,incarnation:row.dataset.incarnation}))`);
+  assert.equal(expanded.length, 2); assert.match(expanded[0].text, /#7001 /); assert.match(expanded[1].text, /#7002 npm run watch/);
+
+  // Each expanded row targets exactly the child it represents. Stop the newer child and keep the oldest one live.
+  await js(`document.querySelectorAll('#backgroundExecList .background-exec-stop')[1].click()`);
+  await wait('processFixture.stopCalls.length===1 && document.querySelector("#backgroundExecStatus .queue-label").textContent.startsWith("Background process running")');
+  assert.deepEqual(await js('processFixture.stopCalls[0]'), {id:'process-a',processId:7002,incarnation:102});
+  assert.match(await js('document.getElementById("backgroundExecStatus").title'), /#7001 /);
+
+  // A child exiting without a tool call publishes lifecycle state and removes the persistent row.
+  await js(`processFixture.processes['process-a']=[];processFixture.publishBackground()`);
+  await wait('document.getElementById("backgroundExecStatus").hidden');
+  await js(`processFixture.processes['process-a']=[
+    {processId:7003,incarnation:103,command:'npm run dev -- --fixture-with-a-long-background-command-that-must-ellipsis-cleanly',startedAt:Date.now()-65_000,tty:false},
+    {processId:7004,incarnation:104,command:'npm run watch',startedAt:Date.now()-20_000,tty:true},
+    {processId:7005,incarnation:105,command:'node scripts/background-worker.js --fixture',startedAt:Date.now()-8_000,tty:false},
+    {processId:7006,incarnation:106,command:'node scripts/background-worker-two.js --fixture',startedAt:Date.now()-4_000,tty:false}
+  ];processFixture.publishBackground()`);
+  await wait('document.querySelector("#backgroundExecStatus .queue-label").textContent==="4 background processes running"');
+  await js(`document.getElementById('backgroundExecStatus').click()`);
+  await wait('!document.getElementById("backgroundExecList").hidden && document.querySelectorAll("#backgroundExecList .background-exec-process").length===4');
+
+  // Stress the real dock occupants at wide/narrow sizes and zoom. The queue alone scrolls;
+  // the process row, Stop action, recovery/Goal statuses and composer remain reachable.
+  await wait('!document.getElementById("agentPlan").hidden && !document.getElementById("recoveryStatus").hidden && !document.getElementById("activeGoalRow").hidden');
+  await js(`document.querySelector('#agentPlan .agent-plan-heading').click();`);
+  const cases = [
+    {width:1100,height:800,zoom:1,theme:'dark',file:'wide-dark'},
+    {width:640,height:800,zoom:1,theme:'light',file:'narrow-light'},
+    {width:640,height:800,zoom:1.5,theme:'dark',file:'narrow-zoom'},
+    {width:420,height:800,zoom:1,theme:'dark',file:'phone-width'}
+  ];
+  const measurements = [];
+  for (const sample of cases) {
+    // Reset zoom before sizing: changing the content size while the previous case is still at
+    // 150% makes Electron preserve that effective CSS viewport for the next measurement.
+    win.webContents.setZoomFactor(sample.zoom); win.setContentSize(sample.width, sample.height);
+    await js(`document.documentElement.dataset.theme=${JSON.stringify(sample.theme)};frame()`);
+    const measured = await js(`(() => {
+      const dock=document.getElementById('composerDock'),proc=document.getElementById('backgroundExecStatus'),list=document.getElementById('backgroundExecList'),queue=document.getElementById('finishQueue'),composer=document.getElementById('composer');
+      const stop=proc.querySelector('.background-exec-stop'),time=proc.querySelector('.background-exec-time');
+      const itemStops=[...list.querySelectorAll('.background-exec-stop')].map(node=>node.getBoundingClientRect()),d=dock.getBoundingClientRect(),p=proc.getBoundingClientRect(),l=list.getBoundingClientRect(),s=stop.getBoundingClientRect(),t=time.getBoundingClientRect(),c=composer.getBoundingClientRect();
+      return {viewport:[innerWidth,innerHeight],dock:[d.left,d.right,d.top,d.bottom],process:[p.left,p.right,p.top,p.bottom],list:[l.left,l.right,l.top,l.bottom],stop:[s.left,s.right],time:[t.left,t.right],composer:[c.top,c.bottom],
+        queueClient:queue.clientHeight,queueScroll:queue.scrollHeight,queueOverflow:getComputedStyle(queue).overflowY,
+        timeVisible:t.width>0,
+        fits:d.left>=0&&d.right<=innerWidth+1&&p.left>=d.left-1&&p.right<=d.right+1&&l.left>=d.left-1&&l.right<=d.right+1&&(!t.width||(t.left>=d.left&&t.right<=d.right))&&itemStops.every(rect=>rect.left>=d.left&&rect.right<=d.right)&&proc.scrollWidth<=proc.clientWidth+1&&list.scrollWidth<=list.clientWidth+1,
+        processVisible:!proc.hidden&&p.height>0,listVisible:!list.hidden&&l.height>0,queueVisible:!queue.hidden&&queue.clientHeight>0,composerVisible:c.top<innerHeight&&c.bottom>0,error:window.fixtureError||null};
+    })()`);
+    assert.equal(measured.error, null, JSON.stringify({sample,measured})); assert.ok(measured.fits, JSON.stringify({sample,measured}));
+    assert.ok(measured.processVisible && measured.listVisible && measured.queueVisible && measured.composerVisible, JSON.stringify({sample,measured}));
+    assert.equal(measured.queueOverflow, 'auto'); assert.ok(measured.queueScroll > measured.queueClient, JSON.stringify({sample,measured}));
+    assert.ok(measured.queueClient <= 241, JSON.stringify({sample,measured}));
+    if (measured.viewport[0] <= 480) assert.equal(measured.timeVisible, false, JSON.stringify({sample,measured}));
+    measurements.push({sample,...measured});
+    await js('frame()'); fs.writeFileSync(path.join(output, sample.file+'.png'), (await win.webContents.capturePage()).toPNG());
   }
-}).catch(error => { console.error(error); app.exit(1); });
+  fs.writeFileSync(path.join(output, 'measurements.json'), JSON.stringify(measurements, null, 2));
+  console.log(`Passed background-process dock lifecycle, isolation, Stop and ${cases.length} geometry cases. Screenshots: ${output}`);
+  harness.finish();
+}).catch(error => { console.error(error); harness.onError(error); });

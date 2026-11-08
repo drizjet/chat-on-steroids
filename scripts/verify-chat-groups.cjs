@@ -1,4 +1,8 @@
 // Chat groups inside a project (#1038). Isolated renderer/Chromium acceptance; no backend.
+const { withoutScripts } = require('./ui-check-page.cjs');
+const fs = require('node:fs');
+const path = require('node:path');
+const assert = require('node:assert/strict');
 if (!process.versions.electron) {
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
   const result = require('node:child_process').spawnSync(require('electron'), [__filename],
@@ -6,16 +10,12 @@ if (!process.versions.electron) {
   process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
   process.exit(result.status ?? 1);
 }
-const { withoutScripts } = require('./ui-check-page.cjs');
-const { app, BrowserWindow } = require('electron');
-const fs = require('node:fs');
-const path = require('node:path');
-const assert = require('node:assert/strict');
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = path.resolve(__dirname, '..');
 const { fixtureConfigSource } = require('./fixtures/app-defaults.cjs');
 const output = path.join(root, 'outputs/chat-groups');
-app.setPath('userData', path.join(output, 'runtime'));
-app.whenReady().then(async () => {
+const harness = createHarness({ name: 'chat-groups', width: 1100, height: 900, userData: path.join(output, 'runtime'), output });
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   const fixture = `
     if (new URL(location.href).searchParams.has('reset')) { localStorage.removeItem('chat-on-steroids.sidebar-order'); localStorage.removeItem('chat-on-steroids.sidebar-pins'); }
@@ -79,22 +79,22 @@ app.whenReady().then(async () => {
         response.setHeader('Content-Type','text/html'); response.end(await vite.transformIndexHtml('/fixture.html',source));
       });
     }}] });
-  let win;
   try {
     await server.listen(); fs.mkdirSync(output,{recursive:true});
-    win = new BrowserWindow({show:false,width:1100,height:900,webPreferences:{sandbox:true,backgroundThrottling:false}});
-    const js = code=>win.webContents.executeJavaScript(code);
+    await harness.window({ webPreferences: { sandbox: true, backgroundThrottling: false, offscreen: false } });
+    const win = harness.win;
+    const js = code=>harness.js(code);
     const until = async (code, message) => {
-      for (let i=0;i<200;i++) { if (await js(code)) return; await new Promise(r=>setTimeout(r,15)); }
+      for (let i=0;i<200;i++) { if (await js(code)) return; await harness.pause(15); }
       assert.fail(message + ' — ' + code);
     };
     const screenshot = async name => {
       await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
-      await new Promise(r=>setTimeout(r,200));
+      await harness.pause(200);
       fs.writeFileSync(path.join(output,name),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
     };
     const load = async query => {
-      await win.loadURL(server.resolvedUrls.local[0]+'fixture.html'+query);
+      await harness.loadUrl(server.resolvedUrls.local[0]+'fixture.html'+query);
       win.webContents.setZoomFactor(1);
       await until('!!window.fixtureReady && document.querySelectorAll(".project-group").length === 2', 'fixture');
       await js(`Promise.all(['CoS Phosphor','CoS Phosphor Fill'].map(name=>document.fonts.load('16px "'+name+'"')))`);
@@ -182,7 +182,7 @@ app.whenReady().then(async () => {
     await js(`document.querySelector('[data-id="task-1"] .sess-top').click()`);
     await until(`document.querySelector('.sess.is-sel')?.dataset.id === 'task-1'`, 'task-1 selected');
     await js(`document.querySelector('[data-group-id="g-spanish"] > summary').click()`);
-    await new Promise(r=>setTimeout(r,100));
+    await harness.pause(100);
     assert.equal(await js(`document.querySelector('[data-group-id="g-spanish"]').open`), true, 'the open chat stays visible');
     await js(`document.querySelector('[data-id="task-3"] .sess-top').click()`);
     await until(`document.querySelector('.sess.is-sel')?.dataset.id === 'task-3'`, 'task-3 selected');
@@ -227,5 +227,6 @@ app.whenReady().then(async () => {
     assert.deepEqual((await js(groupsOf)).map(g=>g[0]), ['Italian', 'Spanish']);
     await screenshot('groups-light.png');
     console.log(JSON.stringify({groups:true,indent,columns,rename:true,cancel:true,move:true,remove:true,selectedStaysOpen:true,order:true,longName:fit,delete:true,output}));
-  } finally { win?.destroy(); await server.close(); app.quit(); }
-}).catch(error=>{console.error(error);app.exit(1)});
+  } finally { await server.close(); }
+  harness.finish();
+}).catch(error=>{console.error(error);harness.onError(error)});

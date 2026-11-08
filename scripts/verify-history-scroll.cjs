@@ -12,9 +12,11 @@ if (!process.versions.electron) {
   process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
   process.exit(result.status ?? 1);
 }
-const { app, BrowserWindow } = require('electron');
-app.whenReady().then(async () => {
-  const root = path.join(__dirname, '..');
+const { createHarness } = require('./lib/ui-harness.cjs');
+const root = path.join(__dirname, '..');
+const show = process.argv.includes('--show');
+const harness = createHarness({ name: 'history-scroll', width: 1400, height: 1000, output: path.join(root, '.local') });
+harness.ready().then(async () => {
   const built = await require('esbuild').build({ entryPoints: [path.join(root, 'src/renderer/chat.ts')],
     bundle: true, write: false, platform: 'browser', format: 'iife', globalName: 'chat',
     outfile: path.join(root, '.local/history-fixture.js'),
@@ -29,10 +31,10 @@ app.whenReady().then(async () => {
     built.outputFiles.filter(file => file.path.endsWith('.css')).map(file => file.text).join('\n');
   const html = withoutScripts(fs.readFileSync(path.join(root, 'src/renderer/index.html'), 'utf8')).replace(/<link\b[^>]*>/g, '')
     .replace('</head>', `<style>${css}</style></head>`);
-  const show = process.argv.includes('--show');
-  const win = new BrowserWindow({ show, title: 'CoS history scroll verification', width: 1400, height: 1000,
-    webPreferences: { sandbox: true, backgroundThrottling: false, offscreen: !show } });
-  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  await harness.window({ webPreferences: { sandbox: true, backgroundThrottling: false, offscreen: !show } });
+  const win = harness.win;
+  if (show) win.show();
+  await harness.loadHtml(html);
   await win.webContents.executeJavaScript(`(() => {
     const ok = data => Promise.resolve({ok:true, data});
     const text = value => ({text:value, truncated:false, chars:value.length});
@@ -367,5 +369,5 @@ app.whenReady().then(async () => {
   console.log(JSON.stringify({revisedHistory},null,2));
   console.log('Dense history scroll passed: real renderer, native wheel, overlap, reversals, scrollbar continuity and live refresh.');
   if(show) { win.webContents.debugger.detach(); return; }
-  win.destroy();app.exit(0);
-}).catch(error=>{console.error(error);app.exit(1);});
+  harness.finish();
+}).catch(error=>{console.error(error);harness.onError(error)});

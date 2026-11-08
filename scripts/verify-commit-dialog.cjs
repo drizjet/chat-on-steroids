@@ -3,25 +3,30 @@
 // the dialog in every language, both themes and a short window: nothing cut or outside it, the
 // buttons always in view, every block on one left edge.
 const { withoutScripts } = require('./ui-check-page.cjs');
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = path.resolve(__dirname, '..');
 const { fixtureConfigSource, BENIGN_RENDERER_ERRORS } = require('./fixtures/app-defaults.cjs');
 const output = path.join(root, 'outputs/commit-dialog');
-app.setPath('userData', path.join(output, 'runtime'));
 fs.mkdirSync(output, { recursive: true });
 const LANGUAGES = ['en', 'de', 'es', 'fr', 'ja', 'ko', 'pt-BR', 'pt-PT', 'ru', 'tr', 'vi', 'zh-CN', 'zh-TW'];
+const harness = createHarness({ name: 'commit-dialog', width: 1500, height: 1000, userData: path.join(output, 'runtime'), output });
 
-app.whenReady().then(async () => {
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
-  let win;
   let server;
   try {
-    win = new BrowserWindow({ show: false, width: 1500, height: 1000,
-      webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } });
-    await win.loadURL('data:text/html,' + encodeURIComponent('<h1>Project preview</h1><p>Local synthetic PDF fixture.</p>'));
+    await harness.window({ webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } });
+    const win = harness.win;
+    await harness.loadHtml('<h1>Project preview</h1><p>Local synthetic PDF fixture.</p>');
     const pdf = await win.webContents.printToPDF({ pageSize: 'A5' });
     const fixture = `
       localStorage.clear();
@@ -114,27 +119,26 @@ app.whenReady().then(async () => {
       } }] });
     await server.listen();
     const js = async code => {
-      try { return await win.webContents.executeJavaScript(code); }
+      try { return await harness.js(code); }
       catch (error) {
-        const detail = await win.webContents.executeJavaScript('({errors:window.fixtureErrors,buttons:[...document.querySelectorAll(".file-preview button")].map(b=>({title:b.title,text:b.textContent})),preview:document.querySelector(".file-preview")?.textContent.slice(0,1000)})').catch(() => null);
+        const detail = await harness.js('({errors:window.fixtureErrors,buttons:[...document.querySelectorAll(".file-preview button")].map(b=>({title:b.title,text:b.textContent})),preview:document.querySelector(".file-preview")?.textContent.slice(0,1000)})').catch(() => null);
         throw new Error(`Renderer script failed: ${code}\n${JSON.stringify(detail)}\n${error.message}`);
       }
     };
     const until = async expression => {
       const deadline = Date.now() + 12_000;
-      while (Date.now() < deadline) { if (await js(expression)) return; await new Promise(resolve => setTimeout(resolve, 30)); }
+      while (Date.now() < deadline) { if (await js(expression)) return; await harness.pause(30); }
       throw new Error('Renderer condition timed out: ' + expression + ' ' + JSON.stringify(await js('window.fixtureErrors')));
     };
     const screenshot = async name => {
       await js('document.getAnimations().forEach(animation => { if (animation.effect.getTiming().iterations !== Infinity) animation.finish(); })');
       await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
-      await new Promise(resolve => setTimeout(resolve, 120));
+      await harness.pause(120);
       fs.writeFileSync(path.join(output, name + '.png'), (await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG());
     };
-    const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
     const dialog = `document.getElementById('commitDialog')`;
     const load = async (theme = 'dark') => {
-      await win.loadURL(server.resolvedUrls.local[0] + 'fixture.html?theme=' + theme);
+      await harness.loadUrl(server.resolvedUrls.local[0] + 'fixture.html?theme=' + theme);
       await until('window.fixtureReady && document.querySelectorAll(".sess[data-id]").length===3');
       await js(`document.querySelector('.sess[data-id="task-0"]').click()`);
       await until('!document.querySelector("#workDockRight .work-dock-quick[data-view=review]").disabled');
@@ -156,7 +160,7 @@ app.whenReady().then(async () => {
       await js(`document.querySelector('#workDockRight .file-commit-bar:not([hidden]) .file-commit-open').click()`);
       await until(`${dialog}.open && document.querySelectorAll('.commit-file').length===2`);
       await js('document.getAnimations().forEach(a => { if (a.effect.getTiming().iterations !== Infinity) a.finish(); })');
-      await pause(150);
+      await harness.pause(150);
     };
     const layout = async label => {
       const view = await js(`(()=>{const d=${dialog},box=d.getBoundingClientRect();
@@ -226,7 +230,7 @@ app.whenReady().then(async () => {
       await js(`document.getElementById('commitCancel').click()`);
       await until(`!${dialog}.open`);
     }
-    win.setContentSize(760, 640); await pause(300);
+    win.setContentSize(760, 640); await harness.pause(300);
     for (const language of ['en', 'de', 'ru', 'vi']) {
       await js(`window.fixture.setLanguage(${JSON.stringify(language)})`);
       await openCommit();
@@ -245,12 +249,13 @@ app.whenReady().then(async () => {
     assert.deepEqual(await js('window.fixtureErrors'), []);
     console.log('PASS: Review Commit button, dialog prefilled from the chat task, all three flows, done steps; 13 languages, both themes, 760 px; reduced motion');
   } catch (error) {
-    if (win && !win.isDestroyed()) fs.writeFileSync(path.join(output, 'failure.png'), (await win.webContents.capturePage()).toPNG());
+    if (harness.win && !harness.win.isDestroyed()) { try { fs.writeFileSync(path.join(output, 'failure.png'), (await harness.win.webContents.capturePage()).toPNG()); } catch {} }
     console.error(error);
-    process.exitCode = 1;
-  } finally {
-    // The dev server can keep a socket open; the check must still end.
     await Promise.race([server?.close(), new Promise(resolve => setTimeout(resolve, 2000))]);
-    app.exit(process.exitCode ?? 0);
+    harness.onError(error);
+    return;
   }
+  // The dev server can keep a socket open; the check must still end.
+  await Promise.race([server?.close(), new Promise(resolve => setTimeout(resolve, 2000))]);
+  harness.finish();
 });

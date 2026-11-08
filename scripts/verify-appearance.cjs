@@ -1,14 +1,20 @@
 // Isolated renderer/Chromium acceptance. No backend, provider, credentials or pairing.
 const { withoutScripts } = require('./ui-check-page.cjs');
-const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { createHarness } = require('./lib/ui-harness.cjs');
 const root = path.resolve(__dirname, '..');
 const { fixtureConfigSource } = require('./fixtures/app-defaults.cjs');
 const output = path.join(root, 'outputs/appearance');
-app.setPath('userData', path.join(output, 'runtime'));
-app.whenReady().then(async () => {
+const harness = createHarness({ name: 'appearance', width: 1100, height: 900, userData: path.join(output, 'runtime'), output });
+harness.ready().then(async () => {
   const { createServer } = await import('vite');
   const fixture = `
     localStorage.removeItem('chat-on-steroids.sidebar-order');
@@ -58,13 +64,13 @@ app.whenReady().then(async () => {
         response.setHeader('Content-Type','text/html'); response.end(await vite.transformIndexHtml('/fixture.html',source));
       });
     }}] });
-  let win;
   try {
     await server.listen(); fs.mkdirSync(output,{recursive:true});
-    win = new BrowserWindow({show:false,width:1100,height:900,webPreferences:{sandbox:true,backgroundThrottling:false}});
-    await win.loadURL(server.resolvedUrls.local[0]+'fixture.html');
+    await harness.window({ webPreferences: { sandbox: true, backgroundThrottling: false, offscreen: false } });
+    const win = harness.win;
+    await harness.loadUrl(server.resolvedUrls.local[0]+'fixture.html');
     win.webContents.setZoomFactor(1);
-    const js = code=>win.webContents.executeJavaScript(code);
+    const js = code=>harness.js(code);
     const verifyPopoverPalette = async () => {
       const mismatch = await js(`(() => {
         const sidebar = getComputedStyle(document.querySelector('.sidebar'));
@@ -77,10 +83,10 @@ app.whenReady().then(async () => {
     const screenshot = async name => {
       await verifyPopoverPalette();
       await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
-      await new Promise(r=>setTimeout(r,200));
+      await harness.pause(200);
       fs.writeFileSync(path.join(output,name),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
     };
-    for(let i=0;i<100 && !(await js('!!window.fixtureReady && document.querySelectorAll(".project-group > .sess").length === 5'));i++) await new Promise(r=>setTimeout(r,25));
+    for(let i=0;i<100 && !(await js('!!window.fixtureReady && document.querySelectorAll(".project-group > .sess").length === 5'));i++) await harness.pause(25);
     assert.equal(await js('!!window.fixtureReady'),true);
     const change = async (id,value) => {
       await js(`(() => {const input=document.getElementById(${JSON.stringify(id)});input.value=${JSON.stringify(value)};input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));})()`);
@@ -203,7 +209,7 @@ app.whenReady().then(async () => {
       // Resize and zoom land asynchronously; on slow CI runners two frames still showed the previous
       // zoom (640 px at 1.5 read as 427 px). Wait until the page reports this window at this zoom.
       const expected=Math.round(win.getContentSize()[0]/zoom);
-      for(let i=0;i<200 && Math.abs(await js('innerWidth')-expected)>1;i++) await new Promise(r=>setTimeout(r,10));
+      for(let i=0;i<200 && Math.abs(await js('innerWidth')-expected)>1;i++) await harness.pause(10);
       await js('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
       const geometry=await js(`(() => {const panel=document.getElementById('appearancePanel');return {viewport:innerWidth,scroll:panel.scrollWidth,width:panel.clientWidth,body:document.documentElement.scrollWidth};})()`);
       assert.ok(geometry.scroll<=geometry.width+1,JSON.stringify({width,zoom,geometry}));
@@ -221,8 +227,8 @@ app.whenReady().then(async () => {
     await js(`window.savedUi=structuredClone(window.fixtureState.config.ui);window.pushState()`);
     await change('appearance-sidebar-hex','#331155');
     const savedUi = await js('window.fixtureState.config.ui');
-    await win.reload();
-    for(let i=0;i<100 && !(await js('!!window.fixtureReady'));i++) await new Promise(r=>setTimeout(r,25));
+    await win.webContents.reload();
+    for(let i=0;i<100 && !(await js('!!window.fixtureReady'));i++) await harness.pause(25);
     await js(`window.fixtureState.config.ui=${JSON.stringify(savedUi)};window.pushState();document.querySelector('[data-tab="appearance"]').click()`);
     assert.equal(await js(`document.getElementById('appearance-sidebar-hex').value`),'#331155');
     await change('uiLanguage','zh-CN');
@@ -233,5 +239,6 @@ app.whenReady().then(async () => {
     await screenshot('chat.png');
     fs.writeFileSync(path.join(output,'results.json'),JSON.stringify({arbitraryColors:true,accentPresets:true,highContrast:true,separateThemes:true,translucency:true,dirtyPush:true,queuedSave:true,saveFailureRollback:true,reload:true,reset:true,layout},null,2));
     console.log('Appearance Electron checks passed. '+output);
-  } finally { win?.destroy(); await server.close(); app.quit(); }
-}).catch(error=>{console.error(error);app.exit(1)});
+  } finally { await server.close(); }
+  harness.finish();
+}).catch(error=>{console.error(error);harness.onError(error)});
