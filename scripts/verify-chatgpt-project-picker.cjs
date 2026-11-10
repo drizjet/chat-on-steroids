@@ -60,6 +60,7 @@ harness.ready().then(async () => {
     const textLeft = node => { const r = document.createRange(); r.selectNodeContents(node); return r.getBoundingClientRect().left; };
     const label = o => o.querySelector('.ico') || o.querySelector('span');
     return {
+      viewportWidth: innerWidth,
       inside: m.left >= 0 && m.right <= innerWidth && m.bottom <= innerHeight,
       headingLeft: heading ? textLeft(heading) : null, searchLeft: search.getBoundingClientRect().left + parseFloat(getComputedStyle(search).paddingLeft),
       optionLeft: label(options[0]).getBoundingClientRect().left,
@@ -91,6 +92,8 @@ harness.ready().then(async () => {
       await open(language);
       const result = await harness.js(measure);
       results.push({ language, width, zoom, ...result });
+      assert.ok(Math.abs(result.viewportWidth * zoom - width) <= 3,
+        'the actual viewport must match the requested width and zoom: ' + JSON.stringify({ language, width, zoom, viewportWidth: result.viewportWidth }));
       if (width === 1100 && zoom === 1) fs.writeFileSync(path.join(output, `picker-${language}.png`), (await win.webContents.capturePage({ x: 0, y: 80, width: 380, height: 360 })).toPNG());
       if (width === 1100 && zoom === 1) {
         const state = await harness.js(empty);
@@ -106,7 +109,6 @@ harness.ready().then(async () => {
       }
       assert.ok(result.noteLines.every(lines => lines <= 1) && !result.noteCut, 'the note is one short, whole line: ' + JSON.stringify({ language, width, zoom, note: result.noteText }));
     }
-    win.setContentSize(1100, 760); win.webContents.setZoomFactor(1);
   }
   fs.writeFileSync(path.join(output, 'measurements.json'), JSON.stringify(results, null, 2));
   console.log('Passed: the ChatGPT Project picker keeps one left edge, one row height and a whole one-line note in all 13 languages (English and German also narrow and zoomed), and the empty Projects line is whole.');

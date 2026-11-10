@@ -1135,7 +1135,7 @@ describe('controlling existing chat automation', () => {
   it('checks an expected conversation inside the real owner before changing a switch', async () => {
     const { goalSwitchFor } = await import('../src/main/goal.js');
     const before = { ...goalSwitchFor(CHAT) };
-    await expect(bridge.setSessionAutomation(chatSession, 'loop', true, 'old-chat')).rejects.toThrow('conversation_changed');
+    await expect(bridge.setSessionAutomation(chatSession, 'loop', true, 'the app', 'old-chat')).rejects.toThrow('conversation_changed');
     expect(goalSwitchFor(CHAT)).toEqual(before);
   });
 
@@ -1144,7 +1144,7 @@ describe('controlling existing chat automation', () => {
     try {
       const reply = await post(route(), { conversationId: CHAT, mode: 'loop', afterTurn: true });
       expect(reply.status).toBe(200);
-      expect(apply).toHaveBeenCalledWith(chatSession, 'loop', true, CHAT);
+      expect(apply).toHaveBeenCalledWith(chatSession, 'loop', true, 'the control API', CHAT);
       expect(reply.body.live.automation).toBe('loop');
       expect(reply.body).not.toHaveProperty('objective');
     } finally { apply.mockRestore(); }
@@ -1205,7 +1205,8 @@ describe('stopping an answer', () => {
     try {
       const reply = await post('/v1/sessions/' + chatSession + '/stop', { turnId: 'turn-1' });
       expect(reply.status).toBe(202);
-      expect(stops).toHaveBeenCalledWith(chatSession, 'turn-1');
+      // #1882: the log names the control API as the Stop's sender.
+      expect(stops).toHaveBeenCalledWith(chatSession, 'turn-1', { from: 'the control API' });
       expect(reply.body.live).toMatchObject({ activeTurnId: 'turn-1', stopPending: true });
     } finally {
       stops.mockRestore();

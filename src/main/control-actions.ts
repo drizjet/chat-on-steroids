@@ -253,7 +253,7 @@ async function stop(sessionId: string, rawBody: unknown): Promise<ActionReply> {
   if (!actionsAllowed()) throw new RequestError(403, 'actions_disabled');
   let controls: SessionControlsView;
   try {
-    controls = await stopSessionTurn(sessionId, body.turnId);
+    controls = await stopSessionTurn(sessionId, body.turnId, { from: 'the control API' });
   } catch (error) {
     const message = error instanceof Error ? error.message : '';
     if (message === 'active_turn_changed') throw new RequestError(409, 'turn_not_running', 'the answer this turnId names is not running');
@@ -277,7 +277,7 @@ async function automation(sessionId: string, rawBody: unknown): Promise<ActionRe
   try {
     // This is the composer's durable owner, not a second automation ledger.
     // It rechecks the expected binding before any mode mutation and after awaits.
-    const controls = await setSessionAutomation(sessionId, body.mode, body.afterTurn, body.conversationId);
+    const controls = await setSessionAutomation(sessionId, body.mode, body.afterTurn, 'the control API', body.conversationId);
     logInfo('control API: automation set for session ' + sessionId + ' to ' + body.mode);
     return { status: 200, body: { live: projectLive(controls) } };
   } catch (error) {
