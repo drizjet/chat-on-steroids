@@ -40,6 +40,28 @@ function createHarness({ name, width = 1100, height = 850, userData, output, ign
       harness.win = win;
       return win;
     },
+    /**
+     * A fresh window at a given content size. A mapped Wayland compositor may ignore
+     * programmatic size changes, so a layout viewport gets its own window rather than a
+     * resized one. The previous window is destroyed only after the new one exists: closing
+     * the last window can otherwise start the app's automatic quit path on Linux.
+     */
+    windowAt(contentWidth, contentHeight) {
+      const previous = harness.win;
+      const win = new BrowserWindow({
+        show: false,
+        width: contentWidth,
+        height: contentHeight,
+        useContentSize: true,
+        webPreferences: { offscreen: true, sandbox: true, backgroundThrottling: false }
+      });
+      win.webContents.on('console-message', event => {
+        if (event.level === 'error' && !ignored.some(skip => event.message.includes(skip))) pageErrors.push(event.message);
+      });
+      harness.win = win;
+      previous?.destroy();
+      return win;
+    },
     js(expression, userGesture = false) {
       return harness.win.webContents.executeJavaScript(expression, userGesture);
     },

@@ -57,9 +57,12 @@ harness.ready().then(async () => {
   try {
     await new Promise(resolve => server.listen(0,'127.0.0.1',resolve)); fs.mkdirSync(output,{recursive:true});
     await harness.window({ webPreferences: { offscreen: true, sandbox: true } });
-    const win = harness.win;
-    const errors = [];
-    win.webContents.on('console-message', event => { if (event.level === 'error' && !event.message.includes('ResizeObserver loop')) errors.push(event.message); });
+    let win = harness.win;
+    // Each layout viewport gets a fresh window at the requested content size: a mapped
+    // Wayland compositor may ignore programmatic size changes, so a resized window would
+    // keep the old viewport and the layout assertions would measure the wrong width.
+    const windowAt = (width, height) => { win = harness.windowAt(width, height); };
+    const errors = harness.pageErrors;
     const js = expression => harness.js(expression);
     const pause = ms => harness.pause(ms);
     const until = async expression => { const end=Date.now()+8000; while(Date.now()<end) { if(await js(expression)) return; await pause(40); } throw new Error('Timeout: '+expression); };
