@@ -31,6 +31,8 @@ interface Operation {
   tool: string;
   grant: z.infer<typeof workspacePolicySchema>;
   warnings: Set<string>;
+  /** One registry read per operation; cleared whenever this operation attempts a registration. */
+  registry?: { root: string; rows: Promise<Registration[]> };
 }
 const operations = new AsyncLocalStorage<Operation>();
 const guiLeases = new AsyncLocalStorage<string>();
@@ -106,7 +108,21 @@ async function sharedRoots(root: string): Promise<string[]> {
   if (values.some(value => !path.isAbsolute(value))) throw new Error('COORDINATOR_POLICY_INVALID: shared roots must be absolute');
   return Promise.all(values.map(value => canonicalCoordinatorPath(value)));
 }
+/** Each path check used to re-read and re-resolve every registration (about 0.5 s at ~950 rows).
+ * Reuse one read within an operation. A new operation always reads afresh, so registrations made by
+ * other processes are seen at the next tool call — the same window as the existing check-then-run gap. */
 async function registrations(root: string): Promise<Registration[]> {
+  const operation = operations.getStore();
+  if (!operation) return readRegistrations(root);
+  if (operation.registry?.root !== root) {
+    const rows = readRegistrations(root);
+    operation.registry = { root, rows };
+    // Never keep a failed read: the next check must see the error again, not a cached rejection.
+    rows.catch(() => { if (operation.registry?.rows === rows) operation.registry = undefined; });
+  }
+  return operation.registry.rows;
+}
+async function readRegistrations(root: string): Promise<Registration[]> {
   const shared = await sharedRoots(root);
   const files = await fs.readdir(path.join(root, 'agents'));
   if (files.length > 5000) throw new Error('COORDINATOR_REGISTRY_INVALID: too many registrations.');
@@ -149,13 +165,18 @@ export async function ensureCoordinatorWorkspace(workspace: string): Promise<voi
   const rows = await registrations(root);
   if (rows.some(row => contains(row.Workspace, target) || contains(target, row.Workspace))) return;
   const agentId = `session-${createHash('sha256').update(principal + '\0' + target.toLowerCase()).digest('hex').slice(0,24)}`;
+  // Whatever the outcome, this operation's later checks must see the registry as it now is.
+  const operation = operations.getStore();
+  if (operation) operation.registry = undefined;
   try {
     const executeFile = promisify((await import('node:child_process')).execFile);
     await executeFile(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe'),
       ['-NoProfile', '-NonInteractive', '-File', path.join(root, 'CoS-Agent.ps1'), '-Action', 'register',
         '-AgentId', agentId, '-Workspace', target, '-Principal', principal, '-SessionId', principal.slice(8)],
       { windowsHide: true, timeout: 20_000, maxBuffer: 16_384 });
+    if (operation) operation.registry = undefined;
   } catch (error) {
+    if (operation) operation.registry = undefined;
     // Another call can win the same canonical workspace. Re-read its committed registry, then let
     // the normal write gate decide ownership. An unrelated registration failure stays visible.
     const after = await registrations(root);
@@ -214,6 +235,19 @@ export async function checkCoordinatorPath(value: string, access: 'read' | 'writ
   }
 }
 
+/** A command run from a shared or approved umbrella names its real project only through declared
+ * write paths. Claim that project folder for the proven session, exactly as a first file write would,
+ * but never a folder outside every umbrella: an arbitrary declared path is not a project boundary. */
+async function ensureDeclaredWriteWorkspace(value: string, cwd: string | undefined): Promise<void> {
+  const root = coordinatorRoot();
+  if (!root || !getConfig().coordinator?.autoRegisterSessions) return;
+  const target = await canonicalCoordinatorPath(value, cwd);
+  const umbrellas = [...await sharedRoots(root),
+    ...await Promise.all(getConfig().roots.filter(approved => !approved.remote).map(approved => canonicalCoordinatorPath(approved.path)))];
+  if (!umbrellas.some(umbrella => contains(umbrella, target) && umbrella.toLowerCase() !== target.toLowerCase())) return;
+  await ensureCoordinatorWriteWorkspace(target, cwd);
+}
+
 export async function checkCoordinatorCommand(cwd: string | undefined, displayCwd = 'the command workspace'): Promise<void> {
   if (!coordinatorRoot()) return;
   const grant = operations.getStore()?.grant;
@@ -222,6 +256,7 @@ export async function checkCoordinatorCommand(cwd: string | undefined, displayCw
   for (const [access, targets] of [['read', grant?.read_paths], ['write', grant?.write_paths]] as const) {
     for (const value of targets ?? []) {
       if (!cwd && !path.isAbsolute(value)) throw new Error('COORDINATOR_CWD_UNKNOWN: declare absolute stdin paths when the shell workspace is unknown.');
+      if (access === 'write') await ensureDeclaredWriteWorkspace(value, cwd);
       await checkCoordinatorPath(value, access, cwd, value);
     }
   }

@@ -2677,6 +2677,8 @@ $('logFilter').addEventListener('click', (event) => {
   if (!button) return;
   for (const other of $('logFilter').querySelectorAll('button')) {
     other.classList.toggle('is-sel', other === button);
+    // The highlight alone is visual; screen readers need the toggle state too.
+    other.setAttribute('aria-pressed', String(other === button));
   }
   $('fullFeed').classList.toggle('only-bad', button.dataset.filter === 'bad');
   paintFeedEmpty();

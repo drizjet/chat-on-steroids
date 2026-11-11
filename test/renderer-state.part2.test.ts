@@ -354,6 +354,18 @@ it('says why an Activity list is empty, in the app language, and drops the note 
   expect(feed.dataset.empty).toBe('Nothing matches this filter.');
 });
 
+it('tells assistive technology which Activity filter is on, not only by colour', async () => {
+  const mounted = await mountChat({}, []);
+  const doc = mounted.window.document;
+  const pressed = () => [...doc.querySelectorAll<HTMLButtonElement>('#logFilter [data-filter]')]
+    .map(button => `${button.dataset.filter}=${button.getAttribute('aria-pressed')}`);
+  expect(pressed()).toEqual(['all=true', 'bad=false']);
+  (doc.querySelector('#logFilter [data-filter="bad"]') as HTMLButtonElement).click();
+  expect(pressed()).toEqual(['all=false', 'bad=true']);
+  (doc.querySelector('#logFilter [data-filter="all"]') as HTMLButtonElement).click();
+  expect(pressed()).toEqual(['all=true', 'bad=false']);
+});
+
 it('preserves native Desktop permissions when saving unrelated settings on Linux', async () => {
   const mounted = await mountChat({
     platform: { family: 'linux', name: 'Linux', desktopAutomation: false }
