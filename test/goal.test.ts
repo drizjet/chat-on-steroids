@@ -1818,6 +1818,27 @@ describe('when OpenRouter refuses', () => {
     expect(diagnostic).toContain('sha256:');
   });
 
+  it('correlates only the configured local queue and only bounded diagnostic metadata', async () => {
+    const prior = getConfig();
+    await saveConfig({ ...prior, goal: { ...prior.goal, provider: { kind: 'custom', baseUrl: 'http://127.0.0.1:4002/v1' } } });
+    const sessionId = await seed('c-queue-metadata');
+    globalThis.fetch = (async () => Response.json({ error: { type: 'colab_recovery_timeout', message: 'PRIVATE_QUEUE_PROSE' } },
+      { status: 503, headers: { 'x-cos-job-id': 'a'.repeat(64) } })) as never;
+    goal.startGoalDraft({ sessionId, conversationId: 'c-queue-metadata', turnId: 'g-1' });
+    const failure = await settled('c-queue-metadata');
+    expect(failure.error).toContain(`queue_job=${'a'.repeat(64)}`);
+    expect(failure.error).toContain('queue_code=colab_recovery_timeout');
+    expect(failure.error).not.toContain('PRIVATE_QUEUE_PROSE');
+
+    await saveConfig({ ...getConfig(), goal: { ...getConfig().goal, provider: { kind: 'custom', baseUrl: 'https://provider.example/v1' } } });
+    const remote = await seed('c-remote-queue-metadata');
+    goal.startGoalDraft({ sessionId: remote, conversationId: 'c-remote-queue-metadata', turnId: 'g-1' });
+    const remoteFailure = await settled('c-remote-queue-metadata');
+    expect(remoteFailure.error).not.toContain('queue_job=');
+    expect(remoteFailure.error).not.toContain('queue_code=');
+    expect(remoteFailure.error).not.toContain('PRIVATE_QUEUE_PROSE');
+  });
+
   it('keeps a failure the page cannot retry on screen after the page acknowledged it (#584)', async () => {
     // 402: nothing will change until the user adds credit, so the page does not retry. It shows the
     // reason and acknowledges the draft. The failure must stay the chat's Goal state: hiding it left

@@ -25,6 +25,17 @@ afterAll(async () => {
   await removeTempDir(dir);
 });
 
+it('round-trips a browser executable and refuses command text without changing saved config', async () => {
+  const executable = path.join(dir, 'Helium', 'chrome.exe');
+  await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, chatBrowserExecutable: executable } });
+  expect((await loadConfig()).ui.chatBrowserExecutable).toBe(executable);
+  const before = await fs.readFile(path.join(dir, 'config.json'), 'utf8');
+  for (const chatBrowserExecutable of ['chrome.exe --profile=other', executable + '\n--private']) {
+    await expect(saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, chatBrowserExecutable } })).rejects.toThrow();
+    expect(await fs.readFile(path.join(dir, 'config.json'), 'utf8')).toBe(before);
+  }
+});
+
 it('retains custom coordinator enrollment and update protection across validated saves', async () => {
   const coordinator = { enabled: true, root: dir, autoRegisterSessions: true, protectUpdates: true };
   await saveConfig({ ...defaultConfig(), coordinator });

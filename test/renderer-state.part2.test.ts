@@ -9,6 +9,19 @@ vi.mock('../src/renderer/workspace-terminal.js', () => ({ createWorkspaceTermina
 vi.mock('../src/renderer/pet.js', () => ({ initPet: () => Object.assign(() => {}, { toggle: () => {}, isVisible: () => false }) }));
 
 
+it('saves an exact browser executable and clears it when the selected family changes', async () => {
+  const mounted = await mountChat();const w = mounted.window;
+  mounted.push({ ...mounted.state, config: { ...mounted.state.config, ui: { ...mounted.state.config.ui, chatBrowser: 'chrome' } } });
+  const field = w.document.getElementById('chatBrowserExecutable') as HTMLInputElement;
+  const executable = 'C:\\Users\\a\\AppData\\Local\\imput\\Helium\\Application\\chrome.exe';
+  field.value = executable;field.dispatchEvent(new w.Event('change', { bubbles: true }));
+  await waitFor(() => expect(mounted.calls.at(-1)?.ui.chatBrowserExecutable).toBe(executable));
+  const select = w.document.getElementById('chatBrowser') as HTMLSelectElement;
+  select.value = 'edge';select.dispatchEvent(new w.Event('change', { bubbles: true }));
+  await waitFor(() => expect(mounted.calls.at(-1)?.ui.chatBrowserExecutable).toBe(''));
+  expect(mounted.calls.at(-1)?.ui.chatBrowser).toBe('edge');
+});
+
 it('saves Auto-select Skills from Settings and restores it on state push', async () => {
   const mounted = await mountChat();
   const w = mounted.window;

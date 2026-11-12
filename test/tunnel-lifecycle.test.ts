@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 
 const fixture = vi.hoisted(() => {
@@ -59,6 +59,8 @@ const fixture = vi.hoisted(() => {
 
   return { children, spawn, health, termination, terminate, removedDirectories };
 });
+
+afterEach(() => vi.unstubAllEnvs());
 
 vi.mock('node:child_process', () => ({ spawn: fixture.spawn }));
 vi.mock('../src/main/exec.js', () => ({
@@ -136,6 +138,9 @@ describe('OpenAI tunnel process ownership', () => {
   // #1255: without this, a computer that reaches the internet through a system proxy could not
   // connect the tunnel unless the person set HTTPS_PROXY before starting the app.
   it('starts the tunnel program with the system proxy, and without one when there is none or the lookup fails', async () => {
+    // Exercise derivation, independently of the runner's own bypass list.
+    vi.stubEnv('NO_PROXY', undefined);
+    vi.stubEnv('no_proxy', undefined);
     vi.stubGlobal('fetch', vi.fn(async () => new Response('missing', { status: 404 })));
     const envOf = async (): Promise<Record<string, string>> => {
       const before = fixture.spawn.mock.calls.length;

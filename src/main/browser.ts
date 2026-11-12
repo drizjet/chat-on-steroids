@@ -13,6 +13,19 @@ export const EXTERNAL_BROWSER_LABELS: Record<ExternalChatBrowser, string> = {
   chrome: 'Chrome', edge: 'Edge', brave: 'Brave', firefox: 'Firefox'
 };
 
+/** An explicit executable is exclusive: another install has different profiles and extensions. */
+function selectedCandidates(platform: NodeJS.Platform, env: NodeJS.ProcessEnv | undefined, home: string | undefined,
+  browser: ChatBrowser, executable?: string): string[] {
+  const saved = getConfig().ui;
+  const chosen = executable ?? (browser === (saved.chatBrowser ?? 'chrome') ? saved.chatBrowserExecutable : undefined);
+  if (chosen?.trim()) {
+    const value = chosen.trim();
+    if (/[\0\r\n]/.test(value) || !(platform === 'win32' ? path.win32 : path.posix).isAbsolute(value)) throw new Error('Browser executable must be an absolute path');
+    return [value];
+  }
+  return preferredBrowserCandidates(platform, env, home, browser);
+}
+
 /**
  * Sign-in uses the person's normal profile, including its installed companion extension. Firefox
  * is not offered: the session handoff reads Chromium's single cookie store, and Firefox keeps a
@@ -20,17 +33,17 @@ export const EXTERNAL_BROWSER_LABELS: Record<ExternalChatBrowser, string> = {
  */
 export function installedSignInBrowsers(): Array<{ browser: ExternalChatBrowser; executable: string }> {
   return (['chrome', 'edge', 'brave'] as const).flatMap(browser => {
-    const executable = preferredBrowserCandidates(process.platform, process.env, undefined, browser)
+    const executable = selectedCandidates(process.platform, process.env, undefined, browser)
       .find(candidate => isExecutableBrowser(candidate, process.platform));
     return executable ? [{ browser, executable }] : [];
   });
 }
 
 export async function openBrowserSignIn(browser: ExternalChatBrowser,
-  options: Pick<PreferredBrowserOpenOptions, 'platform' | 'env' | 'home' | 'usable' | 'launch'> = {}): Promise<string> {
+  options: Pick<PreferredBrowserOpenOptions, 'platform' | 'env' | 'home' | 'usable' | 'launch' | 'executable'> = {}): Promise<string> {
   const platform = options.platform ?? process.platform;
   const usable = options.usable ?? (candidate => isExecutableBrowser(candidate, platform));
-  for (const candidate of new Set(preferredBrowserCandidates(platform, options.env, options.home, browser))) {
+  for (const candidate of new Set(selectedCandidates(platform, options.env, options.home, browser, options.executable))) {
     if (!usable(candidate)) continue;
     // No throwaway profile: it would have neither the person's extension nor their account.
     // Start a fresh ChatGPT login instead of transplanting an embedded OAuth URL/PKCE state.
@@ -52,6 +65,14 @@ export async function isPreferredBrowserRunning(
 ): Promise<boolean | null> {
   if (browser === 'cos') return (await import('./cos-browser/selection.js')).loadedCosBrowser()?.running() ?? false;
   try {
+    const exact = browser === (getConfig().ui.chatBrowser ?? 'chrome') ? getConfig().ui.chatBrowserExecutable?.trim() : undefined;
+    if (exact) {
+      if (platform !== 'win32') return null; // An unknown exact-path probe must not grant wake authority.
+      const literal = exact.replace(/'/g, "''");
+      const result = await powershell(`$ErrorActionPreference='Stop'; if (@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq '${literal}' }).Count) { 'running' } else { 'absent' }`, os.tmpdir(), 5000);
+      if (result.timedOut || result.truncated || result.exitCode !== 0) return null;
+      return result.stdout.trim() === 'absent' ? false : result.stdout.trim() === 'running' ? true : null;
+    }
     if (platform !== 'win32') {
       if (platform !== 'darwin' && platform !== 'linux') return null;
       // comm contains executable names, never arguments or browsing/profile data.
@@ -78,6 +99,8 @@ export async function isPreferredBrowserRunning(
 export interface PreferredBrowserOpenOptions {
   /** Defaults to the saved ChatGPT browser choice. */
   browser?: ChatBrowser;
+  /** Exact executable override, exclusive to this launch and its normal profile. */
+  executable?: string;
   /** Start the owned helper without activating its Windows startup window. */
   backgroundStartup?: boolean;
   /**
@@ -293,7 +316,7 @@ export async function openInPreferredBrowser(
   ];
   let lastError: unknown = null;
 
-  for (const browser of new Set(preferredBrowserCandidates(platform, env, options.home, selected))) {
+  for (const browser of new Set(selectedCandidates(platform, env, options.home, selected, options.executable))) {
     if (!usable(browser)) continue;
     try {
       // A windowless Chrome exits once extensions load unless the profile has a

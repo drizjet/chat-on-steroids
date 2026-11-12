@@ -358,6 +358,7 @@ const configSchema = z.object({
     defaultChatModel: z.string().trim().min(1).max(80).optional().catch(undefined),
     defaultChatReasoning: z.enum(REASONING_EFFORTS).optional().catch(undefined),
     chatBrowser: z.enum(CHAT_BROWSERS).optional().default('chrome'),
+    chatBrowserExecutable: z.string().trim().max(4096).refine(value => !/[\0\r\n]/.test(value) && (!value || path.isAbsolute(value)), 'Browser executable must be an absolute path').optional(),
     /** Where a minimized built-in browser window goes. */
     cosBrowserMinimize: z.enum(['taskbar', 'tray']).optional().default('taskbar'),
     /**

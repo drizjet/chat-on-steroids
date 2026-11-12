@@ -1469,6 +1469,14 @@ function rateLimited(): boolean {
   return requestWindow.count > RATE_LIMIT;
 }
 
+/** Local admission must be distinguishable from a provider/account limit. */
+function localRateLimit(res: http.ServerResponse, origin: string | null): void {
+  const retryAfterMs = Math.max(1000, requestWindow.start + 60_001 - Date.now());
+  if (requestWindow.count === RATE_LIMIT + 1) logWarn(`bridge: local request budget reached (${RATE_LIMIT} per minute); this is local admission, not a ChatGPT quota; retry after ${Math.ceil(retryAfterMs / 1000)} seconds`);
+  res.setHeader('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
+  json(res, 429, { error: 'rate_limited', source: 'local_bridge', retryAfterMs }, origin);
+}
+
 // ---------------------------------------------------------------- validation
 
 const OBSERVATION_KINDS = new Set([
@@ -2577,7 +2585,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         origin
       );
     }
-    if (rateLimited()) return json(res, 429, { error: 'rate_limited' }, origin);
+    if (rateLimited()) return localRateLimit(res, origin);
     let body: unknown;
     try {
       body = await readBody(req);
@@ -2655,7 +2663,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
   // Charge only an authenticated extension. A random local process must not be able to
   // consume the browser's shared budget before failing origin/authentication.
-  if (rateLimited()) return json(res, 429, { error: 'rate_limited' }, origin);
+  if (rateLimited()) return localRateLimit(res, origin);
   if (noteBrowserSeen(req)) changed();
 
   // Only an explicit login operation accepts a session. Never put cookies in diagnostics,
@@ -11637,9 +11645,16 @@ function expire(command: Command): void {
   deliver();
 }
 
+/** Why a command ran out of time, for the log line. Exported for its test. */
+export function commandExpiryReasonForTests(command: Pick<Command, 'lastError' | 'claimedAt' | 'owner' | 'progress'>): string {
+  return commandExpiryReason(command as Command);
+}
 /** Timer and sweep describe the same delivery evidence, preserving a recorded failure. */
 function commandExpiryReason(command: Command): string {
   if (command.lastError) return command.lastError;
+  // A command no page ever took (no owner) is not "a chat this app opened": a Stop sent into a chat whose tab
+  // is closed read "the chat this app opened did not report back (no browser opened it)", which contradicts itself (#2103).
+  if (command.claimedAt !== null && command.owner === null) return `no page picked this command up before its deadline (${commandProgress(command)})`;
   if (command.claimedAt !== null) return `the chat this app opened did not report back in time (${commandProgress(command)})`;
   const step = command.progress?.step;
   return step && REVIVAL_WAIT_STEPS.has(step)
@@ -11657,7 +11672,7 @@ function commandProgress(command: Command, now = Date.now()): string {
   if (command.owner === null) {
     if (progress.opened === 'browser') return 'the browser opened it, but the page never picked up its task';
     if (progress.opened === 'os') return 'it was opened through the operating system, and no page with the extension picked up its task';
-    return 'no browser opened it';
+    return 'nothing recorded how the chat was opened';
   }
   if (!progress.step || REVIVAL_WAIT_STEPS.has(progress.step) || progress.stepAt === undefined) return 'the page picked up its task, then reported nothing more';
   const seconds = Math.max(0, Math.round((now - progress.stepAt) / 1000));

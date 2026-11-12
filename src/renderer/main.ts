@@ -32,6 +32,7 @@ import { initDesktopAskNotice } from './desktop-ask-notice.js';
 import { initPet } from './pet.js';
 import { initPets } from './pets.js';
 import { initSkillsLibrary } from './skills-library.js';
+import { initScheduled } from './scheduled.js';
 import { initWhatsNew } from './whats-new.js';
 import { initTour } from './tour.js';
 import { playSoundCue } from './sound-cues.js';
@@ -71,7 +72,7 @@ import {
 import { extensionVersionRelation } from './update-versions.js';
 import type { SwarmState } from '../shared/session.js';
 import { $, ago, disclosureChevron, el, elapsedDurationText, icon, paintWhenShown, run, shortAgo, toast } from './dom.js';
-import { chatApply, chatSettingsPatch, chatVisible, initChat, openChatSearch, openChatView, openFeedback } from './chat.js';
+import { chatApply, chatSettingsPatch, chatVisible, initChat, openChatSearch, openChatView, openFeedback, openScheduledChat } from './chat.js';
 import { publishStopNoticeTexts } from './stop-notices.js';
 import { publishMainTexts } from './main-texts.js';
 import { paintSharedTunnel } from './tunnel-warning.js';
@@ -83,6 +84,16 @@ declare global {
 }
 
 const api = window.api;
+const scheduled = initScheduled({
+  list: () => api.listSchedules(),
+  pause: (sessionId, paused) => api.pauseSchedule(sessionId, paused),
+  runNow: sessionId => api.runScheduleNow(sessionId),
+  delete: sessionId => api.deleteSchedule(sessionId),
+  openChat: sessionId => { showTab('chat'); void openScheduledChat(sessionId); }
+});
+api.onSessionChanged(() => {
+  if (document.querySelector('.panel[data-panel="scheduled"]')?.classList.contains('is-active')) void scheduled.refresh();
+});
 // First: main announces a Keychain read before it starts and may not get through again until it ends.
 initKeychainNotice(api);
 initDesktopAskNotice(api);
@@ -267,7 +278,7 @@ function showTab(name: string): void {
   if (name !== 'chat') stopTour();
   if (name === 'skills') openSkillsLibrary();
   placePermissions(name);
-  const library = name === 'plugins' || name === 'skills' || name === 'pets';
+  const library = name === 'plugins' || name === 'skills' || name === 'pets' || name === 'scheduled';
   const settings = name !== 'chat' && !library;
   // Opening Settings asks whether "Up to date" is still true (the check itself waits ten minutes).
   if (settings && document.querySelector<HTMLElement>('.app')!.dataset.screen !== 'settings') void api.refreshUpdate();
@@ -277,6 +288,7 @@ function showTab(name: string): void {
   $('workspaceSettings').hidden = false;
   $('workspaceSettings').classList.toggle('is-sel', settings);
   if (name === 'usage') void refreshUsage();
+  if (name === 'scheduled') void scheduled.refresh();
   if (name === 'settings') void paintRecordingStorageUsage();
   $('tabs').hidden = !settings;
   $('settingsFindBox').hidden = !settings;
@@ -379,6 +391,7 @@ $('newChat').addEventListener('click', () => showTab('chat'));
 $('sidebarPlugins').addEventListener('click', () => showTab('plugins'));
 $('sidebarPets').addEventListener('click', () => showTab('pets'));
 $('sidebarSkills').addEventListener('click', () => showTab('skills'));
+$('sidebarScheduled').addEventListener('click', () => showTab('scheduled'));
 api.onPetOverlayOpenOwner(screen => showTab(screen));
 $('addProject').addEventListener('click', () => showTab('chat'));
 let zoomFactor = 1;
@@ -897,6 +910,8 @@ function save(over: { readOnly?: boolean; theme?: ThemeChoice; appearance?: Appe
       defaultChatModel: $<HTMLSelectElement>('defaultChatModel').value || undefined,
       defaultChatReasoning: ($<HTMLSelectElement>('defaultChatReasoning').value || undefined) as Config['ui']['defaultChatReasoning'],
       chatBrowser: $<HTMLSelectElement>('chatBrowser').value as ChatBrowser,
+      chatBrowserExecutable: $<HTMLSelectElement>('chatBrowser').value === (previous.ui.chatBrowser ?? 'chrome')
+        ? $<HTMLInputElement>('chatBrowserExecutable').value.trim() : '',
       cosBrowserMinimize: $<HTMLSelectElement>('cosBrowserMinimize').value === 'tray' ? 'tray' : 'taskbar',
       desktopAsk: ($<HTMLSelectElement>('desktopAsk').value || 'off') as NonNullable<Config['ui']['desktopAsk']>,
       desktopUnattributed: $<HTMLInputElement>('desktopUnattributed').checked,
@@ -1879,6 +1894,8 @@ function apply(next: AppState): void {
   );
   applyValue($<HTMLInputElement>('binaryPath'), config.tunnel.binaryPath, previousState?.config.tunnel.binaryPath);
   applyValue($<HTMLSelectElement>('chatBrowser'), config.ui.chatBrowser ?? 'chrome', previousState?.config.ui.chatBrowser ?? 'chrome');
+  applyValue($<HTMLInputElement>('chatBrowserExecutable'), config.ui.chatBrowserExecutable ?? '', previousState?.config.ui.chatBrowserExecutable ?? '');
+  $('chatBrowserExecutableRow').hidden = config.ui.chatBrowser === 'cos';
   applyValue($<HTMLSelectElement>('cosBrowserMinimize'), config.ui.cosBrowserMinimize ?? 'taskbar', previousState?.config.ui.cosBrowserMinimize ?? 'taskbar');
   applyValue($<HTMLSelectElement>('desktopAsk'), config.ui.desktopAsk ?? 'off', previousState?.config.ui.desktopAsk ?? 'off');
   applyChecked($<HTMLInputElement>('desktopUnattributed'), config.ui.desktopUnattributed === true, previousState?.config.ui.desktopUnattributed === true);

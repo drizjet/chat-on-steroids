@@ -248,6 +248,8 @@ export interface UiPrefs {
   commitFlow?: CommitFlow;
   /** Browser for app-originated launches; connected source tabs retain placement ownership. */
   chatBrowser?: ChatBrowser;
+  /** Exact executable for the selected external browser family; never a shell command. */
+  chatBrowserExecutable?: string;
   /** Where a minimized built-in browser window goes (default: the taskbar or Dock). */
   cosBrowserMinimize?: 'taskbar' | 'tray';
   /**

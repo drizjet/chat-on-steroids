@@ -116,7 +116,7 @@ const {
   pickupNow,
   noteRecoverySweepTick,
   unpair,
-  workerBriefForTests, forgetPickupWatchesForTests } = await import('../src/main/bridge.js');
+  workerBriefForTests, forgetPickupWatchesForTests, commandExpiryReasonForTests } = await import('../src/main/bridge.js');
 const { flushDurable, initDurableStore, readDurable, writeDurableNow, writeDurableSoon } = await import('../src/main/durable.js');
 const { setStuckNotifier } = await import('../src/main/stuck-notice.js');
 const {
@@ -394,6 +394,24 @@ async function pair(): Promise<string> {
   token = reply.body.token as string;
   return token;
 }
+
+it('distinguishes local admission limits, gives a wait and logs once per budget window', async () => {
+  await pair();
+  const { getLog } = await import('../src/main/logger.js');
+  const before = getLog().length;
+  // This exercises only the disposable local fixture, never a provider quota.
+  for (let i = 0; i < 899; i++) expect((await request('GET', '/admission-fixture')).status).toBe(404);
+  const denied = await request('GET', '/admission-fixture');
+  expect(denied.status).toBe(429);
+  expect(denied.body).toMatchObject({ error: 'rate_limited', source: 'local_bridge' });
+  expect(denied.body.retryAfterMs).toBeGreaterThan(0);
+  expect(Number(denied.headers['retry-after'])).toBeGreaterThan(0);
+  expect((await request('GET', '/admission-fixture')).status).toBe(429);
+  expect(getLog().slice(before).filter(row => row.message.includes('local request budget reached'))).toHaveLength(1);
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_002);
+  try { expect((await request('GET', '/admission-fixture')).status).toBe(404); }
+  finally { clock.mockRestore(); }
+}, 15_000);
 
 beforeAll(async () => {
   dir = await makeTempDir('clf-bridge-');
@@ -19317,5 +19335,27 @@ describe('archiving worker chats', () => {
     } finally {
       await config.saveConfig(before);
     }
+  });
+});
+
+// #2103: a Stop no browser ever claimed was logged as "the chat this app opened did not report back in time
+// (no browser opened it)", which says two opposite things. A command with an owner keeps the old wording.
+describe('why a command ran out of time', () => {
+  it('says no page picked up a command that never had an owner, and keeps the old words for one that did', () => {
+    const unowned = commandExpiryReasonForTests({ lastError: null, claimedAt: 1, owner: null, progress: {} });
+    // Nothing recorded how the chat was opened (a Stop opens it through the startup owner without saying so),
+    // so the line must not claim that no browser opened it.
+    expect(unowned).toBe('no page picked this command up before its deadline (nothing recorded how the chat was opened)');
+    expect(unowned).not.toContain('the chat this app opened');
+    expect(unowned).not.toContain('no browser opened it');
+    expect(commandExpiryReasonForTests({ lastError: null, claimedAt: 1, owner: null, progress: { opened: 'browser' } }))
+      .toBe('no page picked this command up before its deadline (the browser opened it, but the page never picked up its task)');
+    expect(commandExpiryReasonForTests({ lastError: null, claimedAt: 1, owner: null, progress: { opened: 'os' } }))
+      .toBe('no page picked this command up before its deadline (it was opened through the operating system, and no page with the extension picked up its task)');
+    expect(commandExpiryReasonForTests({ lastError: null, claimedAt: 1, owner: 'page-1', progress: {} }))
+      .toBe('the chat this app opened did not report back in time (the page picked up its task, then reported nothing more)');
+    expect(commandExpiryReasonForTests({ lastError: 'boom', claimedAt: 1, owner: null, progress: {} })).toBe('boom');
+    expect(commandExpiryReasonForTests({ lastError: null, claimedAt: null, owner: null, progress: {} }))
+      .toBe('the browser did not claim this command before its deadline');
   });
 });

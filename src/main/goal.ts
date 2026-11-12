@@ -2100,7 +2100,7 @@ async function requestGoalDecision(request: GoalRequest): Promise<GoalDecision |
     if (response.ok && response.body) break;
     const header = response.headers.get('retry-after');
     const delay = header === null ? NaN : /^\d+(?:\.\d+)?$/.test(header.trim()) ? Number(header) * 1000 : Date.parse(header) - Date.now();
-    const { error, formatRefused } = await httpFailure(response);
+    const { error, formatRefused } = await httpFailure(response, custom && /^http:\/\/(?:127\.0\.0\.1|localhost):4002\/v1\/?$/.test(baseUrl));
     // A custom endpoint that refuses this response_format gets the next one, once each (#1921).
     if (custom && response.status === 400 && format !== 'none' && formatRefused) {
       const next: GoalResponseFormat = format === 'json_schema' ? 'json_object' : 'none';
@@ -2568,7 +2568,7 @@ function bodyFingerprint(label: 'provider' | 'model', text: string): string {
 }
 
 /** The status and a content-free body fingerprint keep useful diagnostics without provider prose. */
-async function httpFailure(response: Response): Promise<{ error: string; formatRefused: boolean }> {
+async function httpFailure(response: Response, localQueue = false): Promise<{ error: string; formatRefused: boolean }> {
   let body = 'provider body unreadable';
   let formatRefused = false;
   try {
@@ -2577,6 +2577,16 @@ async function httpFailure(response: Response): Promise<{ error: string; formatR
     // remains transient and never becomes a persisted error or log message.
     formatRefused = response.status === 400 && FORMAT_REFUSED.test(raw);
     body = bodyFingerprint('provider', raw);
+    // Correlate the local encrypted queue without retaining provider prose.
+    // These are diagnostic labels only; HTTP status still owns retry policy.
+    const job = response.headers.get('x-cos-job-id');
+    if (localQueue && job && /^[a-f0-9]{64}$/.test(job)) body += `; queue_job=${job}`;
+    try {
+      const code: unknown = JSON.parse(raw)?.error?.type;
+      if (localQueue && typeof code === 'string' && ['colab_recovery_timeout', 'generation_outcome_uncertain',
+        'generation_uncertain_recover_colab', 'generation_unavailable', 'completed_result_expired',
+        'recovery_in_progress', 'queue_full', 'queue_unavailable'].includes(code)) body += `; queue_code=${code}`;
+    } catch { /* Arbitrary response bodies remain content-free fingerprints. */ }
   } catch (error) {
     if (error instanceof Error && error.message === 'response_body_too_large') body = 'provider body too large';
   }

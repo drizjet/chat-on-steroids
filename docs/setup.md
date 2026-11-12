@@ -48,6 +48,17 @@ In these workspaces, the workspace's admins decide who may add custom apps, and 
 - **Use an address that doesn't change.** A tunnel ID never changes, so the admin adds the plugin once. With your own HTTPS tunnel, turn on **Keep plugin URLs across restarts** before sending the admin the URL. A Cloudflare quick tunnel gets a new URL on every start, so it doesn't work for a plugin an admin publishes.
 - **Keep it to yourself.** Anyone who can use the plugin can use your computer within the permissions you chose in CoS. Where the workspace allows it, ask the admin to make the plugin available only to you.
 
+## Exact browser executable
+
+In **Settings → Agents & automation → Browser & history**, **Browser executable (optional)**
+pins app-originated launches to an exact executable within the selected browser family. This is
+useful when the extension and ChatGPT login are in another Chromium browser such as Helium.
+Use a full executable path, without command-line arguments. The existing browser profile is used.
+If that executable is missing or fails to start, CoS reports the failure instead of opening another
+installation with different profiles. Clearing the field restores normal family-based discovery;
+changing the browser family in Settings clears the old executable selection. Existing connected
+tabs retain their original ownership. The built-in browser does not use this field.
+
 ## Browser bridge port
 
 In **Settings → Agents & automation → Browser & history → Browser bridge port**, choose **Auto** (default) or
@@ -166,6 +177,33 @@ You choose the approved folders and capabilities. File tools enforce those roots
 History is recorded locally and kept until you delete a chat; recording can't be turned off. Credentials use the operating system's secure storage. Review permissions before connecting: fresh installs enable Core capabilities and two workers; Windows also starts with Desktop permissions enabled.
 
 [Security policy](../SECURITY.md) · [Tool reference](tool-surface.md) · [Architecture](../AGENTS.md)
+
+## Notifications, steps and limits
+
+### Phone notifications
+
+**Settings → Phone notifications.** Turn on **Send notifications to your phone**, then pick **ntfy**, **Telegram**, or both. You choose when a message is sent (a chat needs you, something fails, a chat finishes after some minutes of work), set **Quiet hours**, and can limit it to times you are away. **Send test** sends a message that never contains chat text. Chat names and answers are left out unless you turn on **Include chat names and answers**.
+
+- **ntfy:** install the free ntfy app and subscribe to the topic shown in Settings. Anyone who knows the topic can read the messages, so keep it private.
+- **Telegram, with a bot of your own:** in Telegram, create a bot with @BotFather and copy its token. In Settings, press **Link…** and paste the token (it is kept in secure storage). Send the shown code to your bot from your own account within 10 minutes. The bot then confirms the link. **Unlink** removes the token.
+- **Telegram commands:** `/status` lists what is running or waiting for you. `/stop`, `/pause` and `/resume` act on a chat of yours (reply to its notification to name it; a bare command works when only one chat is meant). Under an approval you can press **Deny**. **Allowing something from the phone does not exist.**
+- **Replies as messages** are off by default. If you turn on **Let replies send messages to chats**, a reply to a notification goes to that chat as your message, and ChatGPT may then run tools on this computer. Anyone who can use your Telegram account could do the same.
+
+### Steps for you
+
+When ChatGPT needs something only you can do (a sign-in, a USB key, a command it must not run), it hands you a **step for you**. It appears in the chat and above the message box with the exact command, the folder and the files it expects. Run it yourself in your own terminal, then press **Mark as done** or **Skip**; ChatGPT is told which. Chat On Steroids never runs or checks the command.
+
+### Chats working at once
+
+**Settings → Agents & automation → Chats working at once** limits how many chats (sub-agents included) work at the same time, from 1 to 10, or **Off**. Messages the app sends by itself (Goal, Loop, an automatic Continue) wait for a free slot. A message you send always goes out.
+
+### Related folders
+
+In a project's **⋯** menu, **Related folders…** adds context folders from your approved folders. ChatGPT is told about them in that project's chats. They never become the working folder and never grant access.
+
+### When a chat has trouble
+
+One row above the message box says what is wrong now, since when, how often the app tried, and each step it took. It turns amber once the app has stopped trying (for example when no browser tab is open for the chat); opening that chat's tab again lets recovery resume.
 
 ## Sessions, workers and Astra
 

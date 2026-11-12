@@ -14,6 +14,35 @@ vi.mock('../src/main/config.js', async importOriginal => {
 });
 
 describe('browser-backed ChatGPT commands', () => {
+  it('opens a configured Chromium executable with one literal URL and its normal profile', async () => {
+    const executable = 'C:\\Users\\a\\AppData\\Local\\imput\\Helium\\Application\\chrome.exe';
+    const url = 'https://chatgpt.com/?cos-pickup=public-fixture';
+    const launch = vi.fn(async () => ({ pid: 123 }));
+    expect(await openInPreferredBrowser(url, { platform: 'win32', browser: 'chrome', executable,
+      usable: candidate => candidate === executable, launch })).toBe(executable);
+    expect(launch).toHaveBeenCalledWith(executable,
+      ['--disable-renderer-backgrounding', '--disable-background-timer-throttling', url], path.win32.dirname(executable));
+    expect(JSON.stringify(launch.mock.calls)).not.toMatch(/user-data-dir|remote-debugging|user-agent/);
+  });
+
+  it('does not fall through to another Chrome installation when the configured executable is missing or fails', async () => {
+    const executable = 'C:\\Helium\\chrome.exe';
+    const launch = vi.fn(async () => { throw new Error('fixture launch failed'); });
+    const usable = vi.fn(candidate => candidate !== executable);
+    await expect(openInPreferredBrowser('https://chatgpt.com/', { platform: 'win32', executable,
+      env: { ProgramFiles: 'C:\\Program Files' }, usable, launch })).rejects.toThrow('was not found');
+    expect(usable).toHaveBeenCalledExactlyOnceWith(executable);expect(launch).not.toHaveBeenCalled();
+    await expect(openInPreferredBrowser('https://chatgpt.com/', { platform: 'win32', executable,
+      usable: () => true, launch })).rejects.toThrow('fixture launch failed');
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a command string supplied as an executable override', async () => {
+    const launch = vi.fn(async () => ({ pid: 123 }));
+    await expect(openInPreferredBrowser('https://chatgpt.com/', { platform: 'win32', executable: 'chrome.exe --profile=foreign',
+      usable: () => true, launch })).rejects.toThrow('absolute path');
+    expect(launch).not.toHaveBeenCalled();
+  });
   it.each(['chrome', 'edge', 'brave'] as const)('opens sign-in in the selected %s family with its normal profile', async browser => {
     const env = { ProgramFiles: 'C:\\Program Files' };
     const executable = preferredBrowserCandidates('win32', env, undefined, browser)[0]!;
